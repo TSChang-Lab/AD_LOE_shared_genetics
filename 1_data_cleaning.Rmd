@@ -12,8 +12,8 @@ knitr::opts_chunk$set(echo = TRUE)
 ```{r}
 rm(list = ls())
 pacman::p_load(tidyverse, PheWAS)
-raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/data/"
-output_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/output/"
+raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
 # Source in useful functions
 source("functions.R")
 ```
@@ -75,9 +75,10 @@ patient_ehr = enc_demo_60 %>%
   mutate(n_encounter = length(unique(StartDate))) %>% ungroup() %>% 
   select(PatientID, UniqueSampleId, Sex, gen_ancestry, age_last_visit,
          record_length, n_diagnosis, n_encounter) %>% unique() %>% 
-  # filter those age at last visit 60-90
-  filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(patient_ehr) # dim = (25229,8)
+  # filter those age at last visit 60-90 and at least 2 visits
+  filter(age_last_visit >= 60 & age_last_visit < 90) %>% 
+  filter(n_encounter >= 2)
+dim(patient_ehr) # dim = (25018,8)
 ```
 
 ## 4. Phecode w/ PheWAS package 
@@ -86,19 +87,19 @@ enc_demo_filtered = enc_demo %>%
   filter(UniqueSampleId %in% patient_ehr$UniqueSampleId) %>% 
   group_by(UniqueSampleId, DiagnosisCode) %>% 
   arrange(StartDate) %>% slice_head(n = 1) %>% ungroup()
-dim(enc_demo_filtered) # dim = (3550721,8)
+dim(enc_demo_filtered) # dim = (2818597,8)
 # Map to phecodes
 enc_phecode_map = enc_demo_filtered %>% 
   mutate(vocabulary_id = "ICD10CM") %>% 
   left_join(PheWAS::phecode_map, by = c("vocabulary_id" = "vocabulary_id",
                                         "DiagnosisCode" = "code")) %>% unique()
-dim(enc_phecode_map) # dim = (3634136,10)
+dim(enc_phecode_map) # dim = (2885262,10)
 # Collapse to phecode-level first diagnosis
 enc_phecode_map_first = enc_phecode_map %>% 
   group_by(UniqueSampleId, phecode) %>% 
   arrange(StartDate) %>% slice_head(n = 1) %>% ungroup() %>% unique() %>% 
   select(-DiagnosisCode)
-dim(enc_phecode_map_first) # dim = (2225897,8)
+dim(enc_phecode_map_first) # dim = (1766708,8)
 # Save the phenotype data table
 save(enc_phecode_map_first, 
      file = paste0(raw_data_path, "atlas/pheno/enc_phecode_map_first.rda"))
@@ -128,13 +129,13 @@ epi_control_info = patient_ehr %>%
   mutate(epilepsy = 0, EpilepsyDate = NA, epi_age_diagnosis = NA) %>% 
   select(names(epi_case_info)) %>% 
   filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(epi_control_info) # dim = (24342,11)
+dim(epi_control_info) # dim = (24131,11)
 ```
 
 ```{r}
 # combine cases and controls
 epi_patients_full = rbind(epi_case_info, epi_control_info) %>% as.data.frame()
-dim(epi_patients_full) # dim = (25229,11)
+dim(epi_patients_full) # dim = (25018,11)
 ```
 
 ## 2. Define dementia
@@ -157,7 +158,7 @@ dem_control_info = patient_ehr %>%
   mutate(dementia = 0, DementiaDate = NA, dem_age_diagnosis = NA) %>% 
   select(names(dem_case_info)) %>% 
   filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(dem_control_info) # dim = (24072,11)
+dim(dem_control_info) # dim = (23861,11)
 ```
 
 ```{r}
@@ -181,7 +182,7 @@ htn_case_info = enc_phecode_map_first %>%
   mutate(htn_age_diagnosis = min(age_diagnosis),
          HTNDate = min(StartDate)) %>% 
   select(PatientID, UniqueSampleId, HTNDate, htn_age_diagnosis) %>% unique()
-dim(htn_case_info) # dim = (21124,4)
+dim(htn_case_info) # dim = (17204,4)
 ```
 
 ### 2) Diabetes
@@ -191,7 +192,7 @@ diab_case_info = enc_phecode_map_first %>%
   mutate(diab_age_diagnosis = min(age_diagnosis),
          DiabetesDate = min(StartDate)) %>% 
   select(PatientID, UniqueSampleId, DiabetesDate, diab_age_diagnosis) %>% unique()
-dim(diab_case_info) # dim = (8239,4)
+dim(diab_case_info) # dim = (6649,4)
 ```
 
 ### 3) Stroke
@@ -201,7 +202,7 @@ stroke_case_info = enc_phecode_map_first %>%
   mutate(stroke_age_diagnosis = min(age_diagnosis),
          StrokeDate = min(StartDate)) %>% 
   select(PatientID, UniqueSampleId, StrokeDate, stroke_age_diagnosis) %>% unique()
-dim(stroke_case_info) # dim = (608,4)
+dim(stroke_case_info) # dim = (558,4)
 ```
 
 ### 4) Hyperlipid
@@ -211,7 +212,7 @@ hyperlipid_case_info = enc_phecode_map_first %>%
   mutate(hyperlipid_age_diagnosis = min(age_diagnosis),
          HyperlipidDate = min(StartDate)) %>% 
   select(PatientID, UniqueSampleId, HyperlipidDate, hyperlipid_age_diagnosis) %>% unique()
-dim(hyperlipid_case_info) # dim = (21101,4)
+dim(hyperlipid_case_info) # dim = (17106,4)
 ```
 
 ### 5) AD
@@ -221,7 +222,7 @@ ad_case_info = enc_phecode_map_first %>%
   mutate(ad_age_diagnosis = min(age_diagnosis),
          ADDate = min(StartDate)) %>% 
   select(PatientID, UniqueSampleId, ADDate, ad_age_diagnosis) %>% unique()
-dim(ad_case_info) # dim = (483,4)
+dim(ad_case_info) # dim = (473,4)
 ```
 
 
@@ -252,7 +253,7 @@ patient_final = patient_eligible %>%
          ADDate, ad_age_diagnosis)
 dim(patient_final) # dim = (25018,24)
 save(patient_final, file = paste0(raw_data_path, 
-                                  "modeling/patient_final_04112023.rda"))
+                                  "modeling/patient_final.rda"))
 
 patient_final_EUR = patient_final %>% 
   left_join(apoe) %>% left_join(eur_pcs) %>% 
@@ -260,7 +261,7 @@ patient_final_EUR = patient_final %>%
   filter(age_last_visit >= 60)
 dim(patient_final_EUR) # dim = (18742,47)
 save(patient_final_EUR, file = paste0(raw_data_path, 
-                                      "modeling/EUR/patient_final_EUR_04112023.rda"))
+                                      "modeling/EUR/patient_final_EUR.rda"))
 ```
 
 
@@ -269,8 +270,8 @@ save(patient_final_EUR, file = paste0(raw_data_path,
 rm(list = ls())
 pacman::p_load(tidyverse, GenomicRanges, rtracklayer, bigsnpr, bigreadr, 
                data.table, ieugwasr, MRutils)
-raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/data/"
-output_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/output/"
+raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
 # Source in useful functions
 source("functions.R")
 ```
@@ -321,9 +322,9 @@ name2_out = snp_to_extract %>% pull(chr_pos_name2) %>% unique()
 name_out_AD_Kunkle_EUR = c(name1_out, name2_out) %>% unique()
 length(name_out_AD_Kunkle_EUR) # length = 4542
 # Write output for snp extraction on server
-# write.table(name_out_AD_Kunkle_EUR, 
-#             file = paste0(raw_data_path, "sumstats/AD_Kunkle_EUR_wdup.txt"),
-#             sep = "\t", quote = F, row.names = F, col.names = F)
+write.table(name_out_AD_Kunkle_EUR,
+            file = paste0(raw_data_path, "sumstats/AD_Kunkle_EUR_wdup.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = F)
 ```
 
 ```{r}
@@ -355,9 +356,9 @@ table(ttt$n)
 # Extract SNPs
 mapped_final_snp = mapped_snp %>% filter(rank_CADD == 1) %>% 
   pull(uniqueID) %>% unique()
-# write.table(mapped_final_snp, 
-#             file = paste0(raw_data_path, "sumstats/mapped_final_snp.txt"),
-#             sep = "\t", quote = F, row.names = F, col.names = F)
+write.table(mapped_final_snp,
+            file = paste0(raw_data_path, "sumstats/mapped_final_snp.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = F)
 ```
 
 ```{r}
@@ -393,7 +394,7 @@ length(zero_freq_col) # N = 0
 ```
 
 ```{r}
-load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR_04112023.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR.rda"))
 
 # Full genome data + epilepsy + demo
 freeze60k_geno_freq = genotype_df_map %>% 
