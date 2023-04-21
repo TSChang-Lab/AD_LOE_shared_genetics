@@ -123,19 +123,27 @@ dim(epi_case_info) # dim = (887,11)
 ```
 
 ```{r}
+# exclude those with confounding phenotype (exclusion criteria by PheWAS)
+epi_exclude_phecode = PheWAS::phecode_exclude %>% 
+  filter(code %in% epi_phecode) %>% pull(exclusion_criteria) %>% unique()
+epi_control_exclude_Id = enc_phecode_map_first %>% 
+  filter(UniqueSampleId %!in% epi_case_info$UniqueSampleId) %>% 
+  filter(phecode %in% epi_exclude_phecode) %>% pull(UniqueSampleId) %>% unique()
+# N = 5112
 # control info
 epi_control_info = patient_ehr %>% 
   filter(UniqueSampleId %!in% epi_case_info$UniqueSampleId) %>% 
+  filter(UniqueSampleId %!in% epi_control_exclude_Id) %>% 
   mutate(epilepsy = 0, EpilepsyDate = NA, epi_age_diagnosis = NA) %>% 
   select(names(epi_case_info)) %>% 
   filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(epi_control_info) # dim = (24131,11)
+dim(epi_control_info) # dim = (19019,11)
 ```
 
 ```{r}
 # combine cases and controls
 epi_patients_full = rbind(epi_case_info, epi_control_info) %>% as.data.frame()
-dim(epi_patients_full) # dim = (25018,11)
+dim(epi_patients_full) # dim = (19906,11)
 ```
 
 ## 2. Define dementia
@@ -152,29 +160,77 @@ dim(dem_case_info) # dim = (1157,11)
 ```
 
 ```{r}
+# exclude those with confounding phenotype (exclusion criteria by PheWAS)
+dem_exclude_phecode = PheWAS::phecode_exclude %>% 
+  filter(code %in% dem_phecode) %>% pull(exclusion_criteria) %>% unique()
+dem_control_exclude_Id = enc_phecode_map_first %>% 
+  filter(UniqueSampleId %!in% dem_case_info$UniqueSampleId) %>% 
+  filter(phecode %in% dem_exclude_phecode) %>% pull(UniqueSampleId) %>% unique()
+# N = 5357
 # control info
 dem_control_info = patient_ehr %>% 
   filter(UniqueSampleId %!in% dem_case_info$UniqueSampleId) %>% 
+  filter(UniqueSampleId %!in% dem_control_exclude_Id) %>% 
   mutate(dementia = 0, DementiaDate = NA, dem_age_diagnosis = NA) %>% 
   select(names(dem_case_info)) %>% 
   filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(dem_control_info) # dim = (23861,11)
+dim(dem_control_info) # dim = (18504,11)
 ```
 
 ```{r}
 # combine cases and controls
 dem_patients_full = rbind(dem_case_info, dem_control_info) %>% as.data.frame()
-dim(dem_patients_full) # dim = (25229,11)
+dim(dem_patients_full) # dim = (19661,11)
 ```
 
-## 3. Left join find overlap
+## 3. Define AD
+```{r}
+ad_phecode = c("290.11")
+ad_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% ad_phecode) %>% group_by(UniqueSampleId) %>% 
+  mutate(ad_age_diagnosis = min(age_diagnosis),
+         ADDate = min(StartDate)) %>% 
+  select(PatientID, UniqueSampleId, ADDate, ad_age_diagnosis) %>% 
+  unique() %>% left_join(patient_ehr) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90) %>% mutate(AD = 1)
+dim(ad_case_info) # dim = (473,11)
+```
+
+```{r}
+# exclude those with confounding phenotype (exclusion criteria by PheWAS)
+ad_exclude_phecode = PheWAS::phecode_exclude %>% 
+  filter(code %in% ad_phecode) %>% pull(exclusion_criteria) %>% unique()
+ad_control_exclude_Id = enc_phecode_map_first %>% 
+  filter(UniqueSampleId %!in% ad_case_info$UniqueSampleId) %>% 
+  filter(phecode %in% ad_exclude_phecode) %>% pull(UniqueSampleId) %>% unique()
+# N = 6041
+# control info
+ad_control_info = patient_ehr %>% 
+  filter(UniqueSampleId %!in% ad_case_info$UniqueSampleId) %>% 
+  filter(UniqueSampleId %!in% ad_control_exclude_Id) %>% 
+  mutate(AD = 0, ADDate = NA, ad_age_diagnosis = NA) %>% 
+  select(names(ad_case_info)) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90)
+dim(ad_control_info) # dim = (18504,11)
+```
+
+```{r}
+# combine cases and controls
+ad_patients_full = rbind(ad_case_info, ad_control_info) %>% as.data.frame()
+dim(ad_patients_full) # dim = (18977,11)
+```
+
+## 4. Left join find overlap
 ```{r}
 patient_eligible = epi_patients_full %>% left_join(dem_patients_full) %>% 
+  left_join(ad_patients_full) %>% 
   filter(record_length > 0 & n_encounter >= 2)
-dim(patient_eligible) # dim = (25018,14)
+dim(patient_eligible) # dim = (19906,14)
+save(patient_eligible,
+     file = paste0(raw_data_path, "atlas/pheno/patient_eligible.rda"))
 ```
 
-## 4. Also add other covariates
+## 5. Also add other covariates
 ### 1) HTN
 ```{r}
 htn_case_info = enc_phecode_map_first %>% 
@@ -215,16 +271,6 @@ hyperlipid_case_info = enc_phecode_map_first %>%
 dim(hyperlipid_case_info) # dim = (17106,4)
 ```
 
-### 5) AD
-```{r}
-ad_case_info = enc_phecode_map_first %>% 
-  filter(phecode %in% c("290.11")) %>% group_by(UniqueSampleId) %>% 
-  mutate(ad_age_diagnosis = min(age_diagnosis),
-         ADDate = min(StartDate)) %>% 
-  select(PatientID, UniqueSampleId, ADDate, ad_age_diagnosis) %>% unique()
-dim(ad_case_info) # dim = (473,4)
-```
-
 
 ## 5. Combine all
 ```{r}
@@ -239,27 +285,27 @@ eur_pcs$UniqueSampleId = as.numeric(eur_pcs$UniqueSampleId)
 patient_final = patient_eligible %>% 
   left_join(htn_case_info) %>% left_join(diab_case_info) %>% 
   left_join(stroke_case_info) %>% left_join(hyperlipid_case_info) %>% 
-  left_join(ad_case_info) %>% filter(!is.na(epilepsy)) %>% 
+  filter(!is.na(epilepsy)) %>% 
   mutate(female = if_else(Sex == "Female", 1, 0)) %>% 
   mutate(enc_per_yr = n_encounter/record_length) %>% 
   select(UniqueSampleId, female, gen_ancestry, age_last_visit, 
          record_length, enc_per_yr, n_diagnosis, n_encounter,
          epilepsy, EpilepsyDate, epi_age_diagnosis,
+         AD, ADDate, ad_age_diagnosis,
          dementia, DementiaDate, dem_age_diagnosis,
          HTNDate, htn_age_diagnosis,
          DiabetesDate, diab_age_diagnosis,
          StrokeDate, stroke_age_diagnosis,
-         HyperlipidDate, hyperlipid_age_diagnosis,
-         ADDate, ad_age_diagnosis)
-dim(patient_final) # dim = (25018,24)
+         HyperlipidDate, hyperlipid_age_diagnosis)
+dim(patient_final) # dim = (19906,25)
 save(patient_final, file = paste0(raw_data_path, 
                                   "modeling/patient_final.rda"))
 
 patient_final_EUR = patient_final %>% 
   left_join(apoe) %>% left_join(eur_pcs) %>% 
   filter(gen_ancestry == "EUR") %>% 
-  filter(age_last_visit >= 60)
-dim(patient_final_EUR) # dim = (18742,47)
+  filter(age_last_visit >= 60 & age_last_visit < 90)
+dim(patient_final_EUR) # dim = (14997,48)
 save(patient_final_EUR, file = paste0(raw_data_path, 
                                       "modeling/EUR/patient_final_EUR.rda"))
 ```
@@ -402,7 +448,8 @@ freeze60k_geno_freq = genotype_df_map %>%
   mutate(UniqueSampleId = as.numeric(UniqueSampleId)) %>% 
   # add phenotype info
   inner_join(patient_final_EUR) %>% column_to_rownames(var = "UniqueSampleId")
-dim(freeze60k_geno_freq) # dim = c(18742, 189)
+dim(freeze60k_geno_freq) # dim = c(14997, 190)
 save(freeze60k_geno_freq, file = paste0(raw_data_path, 
                                        "modeling/EUR/freeze60k_geno_freq.rda"))
 ```
+
