@@ -300,11 +300,17 @@ dim(patient_final) # dim = (23017,25)
 save(patient_final, file = paste0(raw_data_path, 
                                   "modeling/patient_final.rda"))
 
-patient_final_EUR = patient_final %>% 
+# Add AD PRSs
+load(file = paste0(raw_data_path, "prs/mod/AD_PRS_final.rda"))
+patient_final_prs = patient_final %>% 
+  left_join(AD_PRS_final)
+dim(patient_final_prs) # dim = (23017,27)
+
+patient_final_EUR = patient_final_prs %>% 
   left_join(apoe) %>% left_join(eur_pcs) %>% 
   filter(gen_ancestry == "EUR") %>% 
   filter(age_last_visit >= 60 & age_last_visit < 90)
-dim(patient_final_EUR) # dim = (17306,48)
+dim(patient_final_EUR) # dim = (17306,50)
 save(patient_final_EUR, file = paste0(raw_data_path, 
                                       "modeling/EUR/patient_final_EUR.rda"))
 ```
@@ -317,32 +323,52 @@ pacman::p_load(tidyverse, GenomicRanges, rtracklayer, bigsnpr, bigreadr,
                data.table, ieugwasr, MRutils)
 raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
 output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
+FUMA_data_path = paste0(raw_data_path, "FUMA/")
 # Source in useful functions
 source("functions.R")
 ```
 
 ## 1. Find matched SNPs
+### 1) AD phenotype
 ```{r}
-FUMA_data_path = "/Users/Mingzhou/Desktop/Projects/Genetic-prediction-dementia/data/FUMA/FUMA_AD_EUR/"
-geno_risk_loci = read.table(file = paste0(FUMA_data_path, "GenomicRiskLoci.txt"), 
-                            header = T, sep = "\t", fill = T)
-candidate_snps = read.table(file = paste0(FUMA_data_path, "snps.txt"), 
-                            header = T, sep = "\t", fill = T)
-candidate_snps_short = candidate_snps %>% 
+candidate_snps_AD = read.table(file = paste0(FUMA_data_path, "FUMA_AD_EUR/snps.txt"), 
+                               header = T, sep = "\t", fill = T)
+candidate_snps_short_AD = candidate_snps_AD %>% 
   dplyr::rename("a0" = "non_effect_allele", "a1" = "effect_allele") %>% 
-  select(rsID, chr, pos, a0, a1, gwasP, beta, se, CADD)
-candidate_indsig_info = candidate_snps %>% 
-  mutate(mapping_num = posMapFilt + eqtlMapFilt + ciMapFilt) %>% 
-  select(rsID, r2, IndSigSNP, CADD, GenomicLocus, mapping_num)
+  filter(posMapFilt == 1 | eqtlMapFilt == 1 | ciMapFilt == 1) %>% 
+  select(rsID, chr, pos, a0, a1, gwasP, beta, se, CADD,
+         r2, IndSigSNP, GenomicLocus) %>% 
+  mutate(phenotype = "AD")
+dim(candidate_snps_short_AD) # dim = (1984,13)
 ```
 
+### 2) Epilepsy phenotype
+```{r}
+candidate_snps_epilepsy = read.table(file = paste0(FUMA_data_path, "FUMA_focal_HS/snps.txt"), 
+                                     header = T, sep = "\t", fill = T)
+candidate_snps_short_epilepsy = candidate_snps_epilepsy %>% 
+  dplyr::rename("a0" = "non_effect_allele", "a1" = "effect_allele") %>% 
+  filter(posMapFilt == 1 | eqtlMapFilt == 1 | ciMapFilt == 1) %>% 
+  select(rsID, chr, pos, a0, a1, gwasP, beta, se, CADD,
+         r2, IndSigSNP, GenomicLocus) %>% 
+  mutate(phenotype = "epilepsy")
+dim(candidate_snps_short_epilepsy) # dim = (40,13)
+```
 
 ```{r}
-# 2. Cleaning (liftover + annotation)
+# Check if there are overlap (none)
+intersect(candidate_snps_short_AD$rsID, candidate_snps_short_epilepsy$rsID)
+intersect(candidate_snps_short_AD$IndSigSNP, candidate_snps_short_epilepsy$IndSigSNP)
+# Combine all SNPs
+candidate_snps_combined = rbind(candidate_snps_short_AD, candidate_snps_short_epilepsy)
+```
+
+## 2. Cleaning (liftover + annotation)
+```{r message=FALSE, warning=FALSE}
 setwd("~/Desktop/Projects/AD_genetic_pred/code")
 chain_file = import.chain("hg19ToHg38.over.chain")
-candidate_hg19 = candidate_snps_short %>% 
-  mutate(No = seq(1,nrow(candidate_snps_short)))
+candidate_hg19 = candidate_snps_combined %>% 
+  mutate(No = seq(1,nrow(candidate_snps_combined)))
 # Prepare Genomic Ranges
 hg19.gr = GRanges(
   seqname = paste("chr", candidate_hg19$chr, sep = ""),
@@ -357,40 +383,40 @@ candidate_snps_liftover = candidate_hg19 %>%
             by = c("No" = "group", "chr" = "chr")) %>% select(-pos) %>% 
   dplyr::rename("pos" = "start") %>% 
   filter(!is.na(chr) & !is.na(pos)) %>% unique() 
-dim(candidate_snps_liftover) # dim = 2271,10
+dim(candidate_snps_liftover) # dim = 2013,14
 # 3. Extract and clean ATLAS data -- Server step
 snp_to_extract = candidate_snps_liftover %>% 
   mutate(chr_pos_name1 = paste0("chr", chr, ":", pos, ":", a0, ":", a1),
          chr_pos_name2 = paste0("chr", chr, ":", pos, ":", a1, ":", a0))
 name1_out = snp_to_extract %>% pull(chr_pos_name1) %>% unique()
 name2_out = snp_to_extract %>% pull(chr_pos_name2) %>% unique()
-name_out_AD_Kunkle_EUR = c(name1_out, name2_out) %>% unique()
-length(name_out_AD_Kunkle_EUR) # length = 4542
+name_out_full = c(name1_out, name2_out) %>% unique()
+length(name_out_full) # length = 4700
 # Write output for snp extraction on server
-write.table(name_out_AD_Kunkle_EUR,
-            file = paste0(raw_data_path, "sumstats/AD_Kunkle_EUR_wdup.txt"),
+write.table(name_out_full,
+            file = paste0(raw_data_path, "sumstats/AD_epilepsy_wdup.txt"),
             sep = "\t", quote = F, row.names = F, col.names = F)
 ```
 
+
 ```{r}
 # Read in the QCed genotype and sumstats files + preprocess the bed file (only need to do once for each data set)
-geno_file = paste0(raw_data_path, 'atlas/geno/AD.indsig.EUR')
+geno_file = paste0(raw_data_path, 'atlas/geno/AD.epilepsy.combine')
 # snp_readBed(paste0(geno_file, '.bed'))
 obj.bigSNP = snp_attach(paste0(geno_file, '.rds'))
 # extract the SNP information from the genotype
 map = obj.bigSNP$map[-3]
 names(map) = c("chr", "uniqueID", "pos", "a1", "a0")
 # Reverse beta if necessary by performing SNP matching
-rsid_map_beta_align_AD_EUR = snp_to_extract %>% 
+rsid_map_beta_align = snp_to_extract %>% 
   select(rsID, chr, pos, a1, a0, beta, se, gwasP, CADD) %>% unique()
-info_snp_AD_EUR = snp_match(rsid_map_beta_align_AD_EUR, map) # 1576 variants have been matched
+info_snp = snp_match(rsid_map_beta_align, map) # 1396 variants have been matched
 ```
 
 ## 2. Select mapped SNPs
 ```{r}
-mapped_snp = info_snp_AD_EUR %>% 
-  left_join(candidate_indsig_info) %>% 
-  filter(mapping_num > 0 & !is.na(beta)) %>% 
+mapped_snp = info_snp %>% select(rsID, uniqueID) %>% 
+  left_join(snp_to_extract) %>% 
   group_by(IndSigSNP) %>% arrange(desc(CADD)) %>% 
   mutate(rank_CADD = row_number()) %>% ungroup() %>% 
   filter(rank_CADD == 1 | rsID == IndSigSNP)
@@ -412,22 +438,23 @@ genotype = obj.bigSNP$genotypes
 genotype.targ = snp_fastImputeSimple(obj.bigSNP$genotypes, method = 'mean2') 
 genotype_df = as.matrix(genotype.targ[])[,] %>% as.data.frame()
 colnames(genotype_df) = map$uniqueID
-dim(genotype_df) # 34463,1831
+dim(genotype_df) # 34463,1908
 rownames(genotype_df) = obj.bigSNP$fam$sample.ID
 ```
 
 
 ```{r}
-# Perform final matching using selected CADD-1st
+# Perform final matching using selected CADD-1st (& CADD >= 12.37)
 final2map = mapped_snp %>% filter(rank_CADD == 1) %>% 
-  select(rsID, chr, pos, a1, a0, beta, se, gwasP, CADD, GenomicLocus) %>% unique()
-final_map = snp_match(final2map, map) # 143 variants have been matched
+  select(rsID, chr, pos, a1, a0, beta, se, gwasP, 
+         phenotype, CADD, GenomicLocus) %>% unique()
+final_map = snp_match(final2map, map) # 144 variants have been matched
 ```
 
 ## 3. Finalize genome dataset
 ```{r}
 genotype_df_map = genotype_df %>% select(all_of(final_map$uniqueID))
-dim(genotype_df_map) # 34463,143
+dim(genotype_df_map) # 34463,144
 save(genotype_df_map, file = paste0(raw_data_path, 
                                     "modeling/EUR/genotype_df_map.rda"))
 # Need to exclude some columns (w/ large amount of missing data)
@@ -447,7 +474,7 @@ freeze60k_geno_freq = genotype_df_map %>%
   mutate(UniqueSampleId = as.numeric(UniqueSampleId)) %>% 
   # add phenotype info
   inner_join(patient_final_EUR) %>% column_to_rownames(var = "UniqueSampleId")
-dim(freeze60k_geno_freq) # dim = c(14997, 190)
+dim(freeze60k_geno_freq) # dim = c(17306, 193)
 save(freeze60k_geno_freq, file = paste0(raw_data_path, 
                                        "modeling/EUR/freeze60k_geno_freq.rda"))
 ```
