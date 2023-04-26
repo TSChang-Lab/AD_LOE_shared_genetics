@@ -9,53 +9,63 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-```{r}
+```{r message=FALSE, warning=FALSE}
 rm(list = ls())
-pacman::p_load(tidyverse, gtsummary, epiflow, gtools, caret, gridExtra, forestplot)
-raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/data/"
-output_path = "/Users/Mingzhou/Desktop/Projects/AD-epilepsy-genetics/output/"
+lapply(paste('package:', names(sessionInfo()$otherPkgs), sep = ""),
+       detach, character.only = TRUE, unload = TRUE)
+pacman::p_load(tidyverse, gtsummary, epiflow, gtools, caret, gridExtra, forestplot, h2o)
+raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
 # Source in useful functions
 source("functions.R")
 
 # Load in datasets
-load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR_04112023.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR.rda"))
 load(file = paste0(raw_data_path, "modeling/EUR/freeze60k_geno_freq.rda"))
 load(file = paste0(raw_data_path, "modeling/EUR/genotype_df_map.rda"))
 ```
 
-# Part 1. Descriptive statistics
+# Part 1. Finalize analytical sample
 ```{r}
-desc_prepare = patient_final_EUR %>% 
+# only include patients with valid AD and epilepsy conditions
+final_sample_EUR = patient_final_EUR %>% 
   mutate(htn = if_else(!is.na(HTNDate), 1, 0),
          diabetes = if_else(!is.na(DiabetesDate), 1, 0),
          stroke = if_else(!is.na(StrokeDate), 1, 0),
-         hyperlipid = if_else(!is.na(HyperlipidDate), 1, 0),
-         ad = if_else(!is.na(ADDate), 1, 0)) %>% 
-  mutate(condition = case_when(
-    epilepsy == 0 & ad == 0 ~ "none",
-    epilepsy == 0 & ad == 1 ~ "AD only",
-    epilepsy == 1 & ad == 0 ~ "epilepsy only",
-    epilepsy == 1 & ad == 1 ~ "both"
+         hyperlipid = if_else(!is.na(HyperlipidDate), 1, 0)) %>% 
+  mutate(either = case_when(
+    AD == 0 & epilepsy == 0 ~ 0,
+    TRUE ~ 1
   )) %>% 
-  select(UniqueSampleId, ad, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
+  mutate(both = case_when(
+    AD == 1 & epilepsy == 1 ~ 1,
+    AD == 0 & epilepsy == 0 ~ 0
+  )) %>% 
+  filter(!is.na(either)) %>% filter(!is.na(AD) | !is.na(epilepsy)) %>% 
+  select(UniqueSampleId, AD, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
          age_last_visit, female, PC1, PC2, PC3, PC4, record_length, enc_per_yr, 
-         htn, diabetes, stroke, hyperlipid, dementia, condition,
-         e4count) 
+         htn, diabetes, stroke, hyperlipid, dementia, either, both, e4count,
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm) 
+dim(final_sample_EUR) # dim = (17031,23)
+```
+
+# Part 2. Descriptive statistics
+```{r}
 # Desc by epilepsy status
-desc_prepare %>% mutate(epi.cat = as.factor(epilepsy)) %>% 
-  select(epi.cat, ad, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
-         age_last_visit, female, record_length, enc_per_yr, 
-         htn, diabetes, stroke, hyperlipid, dementia, condition, e4count) %>% 
+final_sample_EUR %>% mutate(epi.cat = as.factor(epilepsy)) %>% 
+  select(epi.cat, AD, either, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, stroke, hyperlipid, dementia, e4count, AD_PRS_full_norm, 
+         AD_PRS_rmapoe_norm) %>% 
   tbl_summary(by = epi.cat) %>% add_p()
 ```
 
 ```{r}
 # Desc by ad status
-desc_prepare %>% mutate(ad.cat = as.factor(ad)) %>% 
-  select(ad.cat, ad, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
-         age_last_visit, female, record_length, enc_per_yr, 
-         htn, diabetes, stroke, hyperlipid, dementia, e4count) %>% 
-  tbl_summary(by = ad.cat) %>% add_p()
+final_sample_EUR %>% mutate(AD.cat = as.factor(AD)) %>% 
+  select(AD.cat, epilepsy, either, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, stroke, hyperlipid, dementia, e4count, AD_PRS_full_norm, 
+         AD_PRS_rmapoe_norm) %>% 
+  tbl_summary(by = AD.cat) %>% add_p()
 ```
 
 
@@ -63,75 +73,568 @@ desc_prepare %>% mutate(ad.cat = as.factor(ad)) %>%
 ## 1. APOE (e4count)
 ```{r}
 demo_basic = 'age_last_visit + female + PC1 + PC2 + PC3 + PC4 + record_length + enc_per_yr'
-health_info = 'htn + diabetes + hyperlipid'
+health_info = paste0(demo_basic, ' + htn + diabetes + hyperlipid') 
 
 # Demographic only
 demo_only = glm(epilepsy ~ age_last_visit + female + record_length + enc_per_yr, 
-                data = desc_prepare, family = 'binomial')
+                data = final_sample_EUR, family = 'binomial')
 # Adjusted for basic demo
 e4count_demo = glm(as.formula(paste('epilepsy ~ e4count + ', demo_basic)), 
-                   data = desc_prepare, family = 'binomial')
+                   data = final_sample_EUR, family = 'binomial')
 # Adjusted for health conditions
-e4count_health = glm(as.formula(paste('epilepsy ~ e4count + ', demo_basic, ' + ', health_info)), 
-                     data = desc_prepare, family = 'binomial')
+e4count_health = glm(as.formula(paste('epilepsy ~ e4count + ', health_info)), 
+                     data = final_sample_EUR, family = 'binomial')
 ```
 
 ## 2. AD PRS full
-
+```{r}
+# Adjusted for basic demo
+prs_full_demo = glm(as.formula(paste('epilepsy ~ AD_PRS_full_norm + ', demo_basic)), 
+                    data = final_sample_EUR, family = 'binomial')
+# Adjusted for health conditions
+prs_full_health = glm(as.formula(paste('epilepsy ~ AD_PRS_full_norm + ', health_info)), 
+                      data = final_sample_EUR, family = 'binomial')
+```
 
 ## 3. AD PRS w/o APOE
+```{r}
+# Adjusted for basic demo
+prs_rmapoe_demo = glm(as.formula(paste('epilepsy ~ AD_PRS_rmapoe_norm + ', demo_basic)), 
+                      data = final_sample_EUR, family = 'binomial')
+# Adjusted for health conditions
+prs_rmapoe_health = glm(as.formula(paste('epilepsy ~ AD_PRS_rmapoe_norm + ', health_info)), 
+                        data = final_sample_EUR, family = 'binomial')
+```
 
+## 4. AD and LOE
+```{r}
+# Adjusted for basic demo
+ad_loe_demo = glm(as.formula(paste('AD ~ epilepsy + ', demo_basic)), 
+                  data = final_sample_EUR, family = 'binomial')
+# Adjusted for health conditions
+ad_loe_health = glm(as.formula(paste('AD ~ epilepsy + ', health_info)), 
+                    data = final_sample_EUR, family = 'binomial')
+
+# Adjusted for basic demo
+loe_ad_demo = glm(as.formula(paste('epilepsy ~ AD + ', demo_basic)), 
+                  data = final_sample_EUR, family = 'binomial')
+# Adjusted for health conditions
+loe_ad_health = glm(as.formula(paste('epilepsy ~ AD + ', health_info)), 
+                    data = final_sample_EUR, family = 'binomial')
+```
 
 ```{r message=FALSE, warning=FALSE}
 # Run all models to get results
-lst_model = c('demo_only', 'e4count_demo', 'e4count_health')
+lst_model = c('demo_only', 'e4count_demo', 'e4count_health', 'prs_full_demo',
+              'prs_full_health', 'prs_rmapoe_demo', 'prs_rmapoe_health',
+              'ad_loe_demo', 'ad_loe_health', 'loe_ad_demo', 'loe_ad_health')
 prs_cont_EUR = make_OR_table(lst_model, 2, 'prs_')
 ```
 
 
-
-# Part 2. Important risk SNPs
-## 1. Stepwise risky SNPs
+# Part 3. Important risk SNPs modeling
 ```{r}
 demo_set = c("female", "age_last_visit", "record_length", "enc_per_yr", 
              "PC1", "PC2", "PC3", "PC4")
-stepwise_df_prep = freeze60k_geno_freq %>%
-  mutate(ad = if_else(!is.na(ADDate), 1, 0)) %>%  
-  select(all_of(names(genotype_df_map)), all_of(demo_set), epilepsy, ad, dementia)
+health_set = c(demo_set, "htn", "diabetes", "hyperlipid")
+load(file = paste0(raw_data_path, "modeling/EUR/mapped_snp.rda"))
+mapped_AD_snp = mapped_snp %>% filter(rank_CADD == 1) %>% 
+  filter(phenotype == "AD") %>% unique()
+model_df_prep = freeze60k_geno_freq %>%
+  rownames_to_column(var = "UniqueSampleId") %>% 
+  mutate(UniqueSampleId = as.numeric(UniqueSampleId)) %>% 
+  inner_join(final_sample_EUR) %>% 
+  select(UniqueSampleId, all_of(names(genotype_df_map)), all_of(health_set), 
+         epilepsy, AD, either, AD_PRS_full_norm, AD_PRS_rmapoe_norm, e4count) %>% 
+  column_to_rownames(var = "UniqueSampleId")
+dim(model_df_prep) # dim = (17031,174)
+h2o.init(nthreads = -1)
+seed_num = 4766
+```
 
-f1 = paste(setdiff(names(stepwise_df_prep), c("epilepsy", "ad", "dementia")), 
-           collapse = "` + `")
-# Build forward selection model
-intercept_only = glm(epilepsy ~ age_last_visit + female + PC1 + PC2 + PC3 + PC4 + 
-                       record_length + enc_per_yr, 
-                     data = stepwise_df_prep, family = 'binomial')
-all = glm(paste0("epilepsy ~ `", f1, "`"), data = stepwise_df_prep, 
-          family = 'binomial')
-forward = step(intercept_only, direction = 'forward', 
-               scope = formula(all), trace = 0)
-selected_vars = gsub("\\+ ", "", forward$anova$Step)[2:length(forward$anova$Step)]
-selected_vars_indsig = gsub("`", "", selected_vars)
-print(selected_vars_indsig)
+## 1. Predict AD | LOE
+```{r}
+Y = "either"
+target.train = as.h2o(model_df_prep)
+target.train[,Y] = as.factor(target.train[,Y])
+X = c(demo_set, mapped_AD_snp$uniqueID)
+# Step 1: feature selection
+SNP.lasso.either = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                           balance_classes = T, model_id = "LASSO either", 
+                           nfolds = 5, fold_assignment = "Stratified", 
+                           seed = seed_num, family = "binomial", 
+                           alpha = 1, lambda_search = TRUE, standardize = T, 
+                           keep_cross_validation_models = F)
+snps_either = SNP.lasso.either@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% health_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(demo_set, snps_either)
+SNP.lasso.either.pred = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO either pred", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial", lambda = 0, 
+                                standardize = T, keep_cross_validation_models = F)
+either.pred = h2o.predict(SNP.lasso.either.pred, target.train) %>% as.data.frame()
 ```
 
 ```{r}
-FUMA_data_path = "/Users/Mingzhou/Desktop/Projects/Genetic-prediction-dementia/data/FUMA/FUMA_AD_EUR/"
-candidate_snps = read.table(file = paste0(FUMA_data_path, "snps.txt"), 
+new_model_data = cbind(model_df_prep, either.pred$p1) 
+names(new_model_data)[175] = "pred_score"
+```
+
+## 2. Predict AD
+```{r}
+# Set response variable
+Y = "AD"
+# set h2o project
+target.train = as.h2o(new_model_data)
+target.train[,Y] = as.factor(target.train[,Y])
+```
+
+### 1) Comparison model
+```{r}
+#========= Benchmark 1: demo only =========
+X = c("age_last_visit", "female", "record_length", "enc_per_yr")
+demo.only = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                    balance_classes = T, model_id = "Demo only", 
+                    nfolds = 5, fold_assignment = "Stratified",
+                    seed = seed_num, family = "binomial", lambda = 0, 
+                    standardize = T, keep_cross_validation_models = F)
+#========= AD PRS model =========
+X = c("AD_PRS_full_norm", demo_set)
+PRS.full = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                   balance_classes = T, model_id = "AD PRS full", 
+                   nfolds = 5, fold_assignment = "Stratified", 
+                   seed = seed_num, family = "binomial", lambda = 0, 
+                   standardize = T, keep_cross_validation_models = F)
+X = c("AD_PRS_rmapoe_norm", demo_set)
+PRS.rmapoe = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                     balance_classes = T, model_id = "AD PRS without APOE", 
+                     nfolds = 5, fold_assignment = "Stratified", 
+                     seed = seed_num, family = "binomial", lambda = 0, 
+                     standardize = T, keep_cross_validation_models = F)
+X = c("e4count", demo_set)
+e4count = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                  balance_classes = T, model_id = "e4count", 
+                  nfolds = 5, fold_assignment = "Stratified", 
+                  seed = seed_num, family = "binomial", lambda = 0, 
+                  standardize = T, keep_cross_validation_models = F)
+```
+
+### 2) Direct LASSO
+```{r}
+X = c(mapped_AD_snp$uniqueID, demo_set)
+snp.lasso.AD.feature = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                               balance_classes = T, model_id = "LASSO AD feature", 
+                               nfolds = 5, fold_assignment = "Stratified", 
+                               seed = seed_num, family = "binomial",
+                               alpha = 1, lambda_search = TRUE,
+                               standardize = T, keep_cross_validation_models = F)
+snps_AD = snp.lasso.AD.feature@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% demo_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(snps_AD, demo_set)
+snp.direct.lasso.AD = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                              balance_classes = T, model_id = "LASSO direct AD", 
+                              nfolds = 5, fold_assignment = "Stratified", 
+                              seed = seed_num, family = "binomial", lambda = 0, 
+                              standardize = T, keep_cross_validation_models = F)
+```
+
+### 3) Two-step LASSO
+```{r}
+X = c(mapped_AD_snp$uniqueID, demo_set, "pred_score")
+snp.lasso2.AD.feature = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO AD feature 2", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial",
+                                alpha = 1, lambda_search = TRUE,
+                                standardize = T, keep_cross_validation_models = F)
+snps_AD_specific = snp.lasso2.AD.feature@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% demo_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(snps_AD_specific, demo_set)
+snp.twostep.lasso.AD = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                               balance_classes = T, model_id = "LASSO two-step AD", 
+                               nfolds = 5, fold_assignment = "Stratified", 
+                               seed = seed_num, family = "binomial", lambda = 0, 
+                               standardize = T, keep_cross_validation_models = F)
+```
+
+```{r}
+all_model_metric = c()
+all_model_performance = c()
+# Extract results
+model_list = c("demo.only", "PRS.full", "PRS.rmapoe", "e4count",
+               "snp.direct.lasso.AD", "snp.twostep.lasso.AD")
+for (i in 1:length(model_list)) {
+  print(paste0("Model: ", model_list[i]))
+  # Run extraction function
+  extract_cv = extract_cv_results(get(model_list[i]))
+  model_metric = t(extract_cv[[1]]) %>% as.data.frame() %>% 
+    mutate(mark = model_list[i])
+  model_performance = extract_cv[[2]] %>% as.data.frame() %>% 
+    mutate(mark = model_list[i])
+  if (i == 1) {
+    all_model_metric = model_metric
+    all_model_performance = model_performance
+  } else {
+    all_model_metric = rbind(all_model_metric, model_metric)
+    all_model_performance = rbind(all_model_performance, model_performance)
+  }
+}
+# Join results together
+model_metric_AD = rbind(all_model_metric)
+model_performance_AD = rbind(all_model_performance)
+model_summary_AD = model_metric_AD %>% inner_join(model_performance_AD)
+```
+
+## 3. Predict epilepsy
+```{r}
+# Set response variable
+Y = "epilepsy"
+# set h2o project
+target.train = as.h2o(new_model_data)
+target.train[,Y] = as.factor(target.train[,Y])
+```
+
+### 1) Comparison model
+```{r}
+#========= Benchmark 1: demo only =========
+X = c("age_last_visit", "female", "record_length", "enc_per_yr")
+demo.only = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                    balance_classes = T, model_id = "Demo only", 
+                    nfolds = 5, fold_assignment = "Stratified",
+                    seed = seed_num, family = "binomial", lambda = 0, 
+                    standardize = T, keep_cross_validation_models = F)
+#========= AD PRS model =========
+X = c("AD_PRS_full_norm", demo_set)
+PRS.full = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                   balance_classes = T, model_id = "AD PRS full", 
+                   nfolds = 5, fold_assignment = "Stratified", 
+                   seed = seed_num, family = "binomial", lambda = 0, 
+                   standardize = T, keep_cross_validation_models = F)
+X = c("AD_PRS_rmapoe_norm", demo_set)
+PRS.rmapoe = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                     balance_classes = T, model_id = "AD PRS without APOE", 
+                     nfolds = 5, fold_assignment = "Stratified", 
+                     seed = seed_num, family = "binomial", lambda = 0, 
+                     standardize = T, keep_cross_validation_models = F)
+X = c("e4count", demo_set)
+e4count = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                  balance_classes = T, model_id = "e4count", 
+                  nfolds = 5, fold_assignment = "Stratified", 
+                  seed = seed_num, family = "binomial", lambda = 0, 
+                  standardize = T, keep_cross_validation_models = F)
+```
+
+### 2) Direct epilepsy LASSO
+```{r}
+X = c(setdiff(names(genotype_df_map), mapped_AD_snp$uniqueID), demo_set)
+snp.lasso.epi.feature = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO epi feature", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial",
+                                alpha = 1, lambda_search = TRUE,
+                                standardize = T, keep_cross_validation_models = F)
+snps_epilepsy = snp.lasso.epi.feature@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% demo_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(snps_epilepsy, demo_set)
+snp.direct.lasso.epi = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                               balance_classes = T, model_id = "LASSO direct epi", 
+                               nfolds = 5, fold_assignment = "Stratified", 
+                               seed = seed_num, family = "binomial", lambda = 0, 
+                               standardize = T, keep_cross_validation_models = F)
+```
+
+### 3) Direct AD LASSO
+```{r}
+X = c(mapped_AD_snp$uniqueID, demo_set)
+snp.lasso.epi.ADfeature = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO epi AD feature", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial",
+                                alpha = 1, lambda_search = TRUE,
+                                standardize = T, keep_cross_validation_models = F)
+snps_ADepilepsy = snp.lasso.epi.ADfeature@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% demo_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(snps_ADepilepsy, demo_set)
+snp.ADdirect.lasso.epi = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                 balance_classes = T, model_id = "LASSO AD direct epi", 
+                                 nfolds = 5, fold_assignment = "Stratified", 
+                                 seed = seed_num, family = "binomial", lambda = 0, 
+                                 standardize = T, keep_cross_validation_models = F)
+```
+
+### 4) Two-step LASSO
+```{r}
+X = c(mapped_AD_snp$uniqueID, demo_set, "pred_score")
+snp.lasso2.epi.feature = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                 balance_classes = T, model_id = "LASSO epi feature 2", 
+                                 nfolds = 5, fold_assignment = "Stratified", 
+                                 seed = seed_num, family = "binomial",
+                                 alpha = 1, lambda_search = TRUE,
+                                 standardize = T, keep_cross_validation_models = F)
+snps_epi_specific = snp.lasso2.epi.feature@model$variable_importances %>% 
+  as.data.frame() %>% filter(variable %!in% demo_set) %>% 
+  filter(scaled_importance > 0) %>% pull(variable)
+X = c(snps_epi_specific, demo_set)
+snp.twostep.lasso.epi = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO two-step epilepsy", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial", lambda = 0, 
+                                standardize = T, keep_cross_validation_models = F)
+```
+
+```{r}
+all_model_metric = c()
+all_model_performance = c()
+# Extract results
+model_list = c("demo.only", "PRS.full", "PRS.rmapoe", "e4count",
+               "snp.direct.lasso.epi", "snp.ADdirect.lasso.epi", "snp.twostep.lasso.epi")
+for (i in 1:length(model_list)) {
+  print(paste0("Model: ", model_list[i]))
+  # Run extraction function
+  extract_cv = extract_cv_results(get(model_list[i]))
+  model_metric = t(extract_cv[[1]]) %>% as.data.frame() %>% 
+    mutate(mark = model_list[i])
+  model_performance = extract_cv[[2]] %>% as.data.frame() %>% 
+    mutate(mark = model_list[i])
+  if (i == 1) {
+    all_model_metric = model_metric
+    all_model_performance = model_performance
+  } else {
+    all_model_metric = rbind(all_model_metric, model_metric)
+    all_model_performance = rbind(all_model_performance, model_performance)
+  }
+}
+# Join results together
+model_metric_epi = rbind(all_model_metric)
+model_performance_epi = rbind(all_model_performance)
+model_summary_epi = model_metric_epi %>% inner_join(model_performance_epi)
+```
+
+
+# Part 4. Explore shared features
+## 1. Shared SNPs and mapped to genes
+```{r}
+FUMA_data_path = paste0(raw_data_path, "FUMA/")
+candidate_snps = read.table(file = paste0(FUMA_data_path, "FUMA_AD_EUR/snps.txt"), 
                             header = T, sep = "\t", fill = T)
 load(file = paste0(raw_data_path, "modeling/EUR/mapped_snp.rda"))
 candidate_snps_info = candidate_snps %>% 
   select(rsID, nearestGene, dist, func, posMapFilt, eqtlMapFilt, ciMapFilt)
-rsID_check = mapped_snp %>% filter(uniqueID %in% selected_vars_indsig) %>% 
-  select(rsID, uniqueID, chr, pos, a0, a1, beta, se, gwasP, CADD) %>% 
+rsID_check_AD = mapped_snp %>% 
+  filter(uniqueID %in% c(snps_either, snps_AD_specific, snps_epi_specific)) %>% 
+  select(rsID, uniqueID, chr, pos, a0, a1, gwasP, CADD, phenotype) %>% 
+  filter(phenotype == "AD") %>% 
+  mutate(snps_either = if_else(uniqueID %in% snps_either, 1, 0)) %>% 
+  mutate(snps_AD_specific = if_else(uniqueID %in% snps_AD_specific, 1, 0)) %>% 
+  mutate(snps_epi_specific = if_else(uniqueID %in% snps_epi_specific, 1, 0)) %>% 
   left_join(candidate_snps_info)
+write.table(rsID_check_AD,
+            file = paste0(output_path, "rsID_check_AD.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
 
-candidate_snps_short = candidate_snps %>% select(rsID, chr, pos)
-mapped_stepwise_snp = rsID_check %>% select(rsID) %>% 
-  left_join(candidate_snps_short) %>% dplyr::rename("rsid" = "rsID")
-# write.table(mapped_stepwise_snp, 
-#             file = paste0(output_path, "mapped_stepwise_snp.txt"),
-#             sep = "\t", quote = F, row.names = F, col.names = T)
+candidate_snps_epilepsy = read.table(file = paste0(FUMA_data_path, "FUMA_general_epilepsy/snps.txt"), 
+                                     header = T, sep = "\t", fill = T)
+candidate_snps_info_epi = candidate_snps_epilepsy %>% 
+  select(rsID, nearestGene, dist, func, posMapFilt, eqtlMapFilt, ciMapFilt)
+rsID_check_epi = mapped_snp %>% filter(uniqueID %in% snps_epilepsy) %>% 
+  select(rsID, uniqueID, chr, pos, a0, a1, gwasP, CADD, phenotype) %>% 
+  filter(phenotype == "epilepsy") %>% 
+  mutate(snps_epilepsy = if_else(uniqueID %in% snps_epilepsy, 1, 0)) %>% 
+  left_join(candidate_snps_info_epi)
+write.table(rsID_check_epi,
+            file = paste0(output_path, "rsID_check_epi.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
+
+save(rsID_check_AD, file = paste0(raw_data_path, "modeling/EUR/snps_interpret/rsID_check_AD.rda"))
+save(rsID_check_epi, file = paste0(raw_data_path, "modeling/EUR/snps_interpret/rsID_check_epi.rda"))
+# Output this for lead SNPs FUMA submission
+candidate_snps_AD_short = candidate_snps %>% 
+  select(rsID, chr, pos) %>% unique() 
+lasso_either_snp = rsID_check_AD %>% filter(snps_either == 1) %>% select(rsID) %>% 
+  left_join(candidate_snps_AD_short) %>% dplyr::rename("rsid" = "rsID") 
+write.table(lasso_either_snp,
+            file = paste0(output_path, "lasso_either_snp.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
 ```
+
+## 2. Check overlaps
+```{r}
+library(hrbrthemes)
+heatmap_plot = rsID_check_AD %>% 
+  select(rsID, snps_either, snps_AD_specific, snps_epi_specific) %>% 
+  pivot_longer(c(snps_either, snps_AD_specific, snps_epi_specific),
+               names_to = "set", values_to = "value") %>% 
+  mutate(set_2 = case_when(
+    set == "snps_either" ~ "Shared",
+    set == "snps_AD_specific" ~ "AD specific",
+    set == "snps_epi_specific" ~ "LOE specific"
+  )) %>% select(-set)
+pdf(paste0(output_path, "snp_overlaps.pdf"), width = 1.8, height = 10)
+ggplot(heatmap_plot, aes(rsID, set_2, fill = value)) + 
+  geom_tile() + coord_flip() +
+  scale_fill_gradient(low = "white", high = "black") +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank()) 
+dev.off()
+```
+
+
+## 2. SNP coefficients
+```{r}
+either_snp_coeff = SNP.lasso.either@model$coefficients_table
+either_snp_coeff_top = either_snp_coeff %>% 
+  filter(names %!in% demo_set) %>%
+  arrange(desc(abs(standardized_coefficients))) %>% 
+  filter(standardized_coefficients != 0) %>% 
+  filter(names != "Intercept") %>% 
+  left_join(rsID_check_AD, by = c("names" = "uniqueID")) %>% 
+  mutate(coeff_cat = if_else(standardized_coefficients >= 0, "positive", "negative")) %>% 
+  mutate(feature = case_when(
+    names %in% demo_set ~ names,
+    TRUE ~ rsID
+  )) %>% filter(abs(standardized_coefficients) >= 0.01) %>% 
+  mutate(group = case_when(
+    !is.na(phenotype) ~ phenotype,
+    names %in% demo_set ~ "demographics"
+  )) %>% mutate(magnitude = abs(standardized_coefficients)) %>% 
+  select(names, feature, standardized_coefficients, magnitude,
+         phenotype, group, coeff_cat) 
+# create a new factor variable for sorting the x-axis
+either_snp_coeff_top$feature_sorted = reorder(either_snp_coeff_top$feature, 
+                                              either_snp_coeff_top$magnitude)
+# Plot the coefficients
+pdf(paste0(output_path, "coef_plot.pdf"), width = 10, height = 5)
+ggplot(either_snp_coeff_top, 
+       aes(x = feature_sorted, y = magnitude, fill = coeff_cat)) + 
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = c("#4D4DF5", "#ED706B")) +
+  coord_flip() +
+  scale_y_continuous(limits = c(0, 0.06)) + 
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+dev.off()
+```
+
+# Part 5. Explore step 1 prediction score
+```{r}
+levels(quantcut(new_model_data$pred_score, q = 5, na.rm = T))
+explore_df_final = new_model_data %>% 
+  mutate(high_pred_score = if_else(pred_score > 0.382, 1, 0),
+         low_pred_score = if_else(pred_score <= 0.202, 1, 0)) %>% 
+  mutate(condition = case_when(
+    epilepsy == 0 & AD == 0 ~ "none",
+    epilepsy == 1 & AD == 1 ~ "both",
+    AD == 1 ~ "AD only",
+    epilepsy == 1 ~ "LOE only",
+  )) %>% 
+  rownames_to_column(var = "UniqueSampleId") %>% 
+  mutate(UniqueSampleId = as.numeric(UniqueSampleId)) %>% 
+  select(UniqueSampleId, pred_score, high_pred_score, low_pred_score, condition) %>% 
+  left_join(patient_final_EUR) %>% 
+  mutate(htn = if_else(!is.na(HTNDate), 1, 0),
+         diabetes = if_else(!is.na(DiabetesDate), 1, 0),
+         stroke = if_else(!is.na(StrokeDate), 1, 0),
+         hyperlipid = if_else(!is.na(HyperlipidDate), 1, 0)) 
+explore_df_short = explore_df_final %>% 
+  filter(high_pred_score == 1 | low_pred_score == 1)
+```
+
+## Top 20% vs. bottom 20% score
+```{r}
+explore_df_short %>% 
+  mutate(n_conditions = epilepsy + AD) %>% 
+  dplyr::select(high_pred_score, age_last_visit, female, record_length, enc_per_yr, 
+         epilepsy, e4count, dementia, htn, diabetes, hyperlipid, AD, 
+         epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, n_conditions,
+         condition, AD_PRS_full_norm, AD_PRS_rmapoe_norm) %>% 
+  tbl_summary(by = high_pred_score) %>% add_p()
+```
+
+## Number of conditions
+```{r}
+explore_df_final %>% 
+  mutate(high_sharedRS.cat = as.factor(high_sharedRS),
+         female.cat = as.factor(female)) %>%
+  dplyr::select(high_sharedRS.cat, age_last_visit, female.cat, record_length, 
+         enc_per_yr, epilepsy, e4count, dementia, htn, diabetes, stroke, 
+         hyperlipid, ad, epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, 
+         condition, shared_RS) %>% 
+  tbl_summary(by = condition) %>% add_p()
+```
+
+## Forest plot
+```{r}
+var_names = c('epilepsy', 'ad', 'dementia', # 3
+              'age_last_visit', 'female', 'record_length', 'enc_per_yr', # 4
+              'htn', 'diabetes', 'stroke', 'hyperlipid', # 4
+              'e4count') # 1
+explanary_names = c('Late-onset Epilepsy', "Alzheimer's Disease", 'Dementia', 
+                    'Age at last visit', 'Sex (female)', 'EHR record length', 
+                    'EHR record density', 'Hypertension', 'Diabetes', 'Stroke', 
+                    'Hyperlipid', 'APOE-e4 allele count')
+
+model_lst = list()
+for (i in 1:length(var_names)) {
+  model_lst[[i]] = lm(as.formula(paste0('shared_RS ~ ', var_names[i], 
+                                        " + PC1 + PC2 + PC3 + PC4")),
+                      data = explore_df_short)
+}
+table1 = build_coef_table(var_names, model_lst)
+
+forest.data = table1 %>% 
+  dplyr::select(beta, lower_CI, upper_CI) %>% 
+  mutate(sub = c('Primary outcomes', rep(NA, 2), 
+                 'Demographics', rep(NA, 3), 
+                 'Health conditions' , rep(NA, 3),
+                 'AD genetics', rep(NA, 0))) %>% 
+  mutate(beta = round(as.numeric(as.character(beta)), 3),
+         lower_CI = round(as.numeric(as.character(lower_CI)), 3),
+         upper_CI = round(as.numeric(as.character(upper_CI)), 3)) %>% 
+  mutate(class = c(rep(2, 3), rep(3, 4), rep(4, 4), rep(5, 1)))
+
+tabletext = cbind(
+  c("Category", "\n", forest.data$sub),
+  c("Exposure", "\n", explanary_names),
+  c("Beta coefficient (95% CI)", "\n", as.character(table1$text))
+)
+pop.cols = c("black","black","black", "black", "black")
+```
+
+```{r}
+pdf(paste0(output_path, "Shared_RS_Forest.pdf"), width = 10, height = 5)
+forestplot(labeltext = tabletext, graph.pos = 1,
+           mean = c(NA, NA, forest.data$beta), 
+           lower = c(NA, NA, forest.data$lower_CI),
+           upper = c(NA, NA, forest.data$upper_CI),
+           xticks = c(-0.1, 0, 0.1, 0.2, 0.3, 0.4),
+           zero = 0,
+           title = "Figure 4. Associations between covariates and shared genetic risk score (n = 18,742)",
+           xlab = "Effect Size",
+           txt_gp = fpTxtGp(label = list(gpar(fontface = "bold", cex = 0.8, 
+                                              fontfamily = "serif"),
+                                         gpar(cex = 0.8, fontfamily = "serif"),
+                                         gpar(cex = 0.8, fontfamily = "serif")),
+                            ticks = gpar(cex = 0.6, fontfamily = "serif"),
+                            xlab = gpar(cex = 0.7, fontfamily = "serif"),
+                            title = gpar(cex = 1, fontfamily = "serif")),
+           col = fpColors(text = pop.cols[c(1, 1, forest.data$class)], 
+                          box  ="black",
+                          lines = "black", 
+                          zero ="gray50"),
+           cex = 0.2, lineheight = "auto", boxsize = 0.25, 
+           lwd.ci = 1, ci.vertices = TRUE, ci.vertices.height = 0.15)
+dev.off()
+```
+
 
 ## 2. Get coefficients with 5-fold cross-validation
 ```{r}
@@ -285,144 +788,9 @@ explore_df_final = weighted_full %>%
 dim(explore_df_final) # dim = (18742,53)
 ```
 
-```{r}
-# Plot the coefficients
-plot_mean = ggplot(mean_coeff_final, aes(x = rsID, y = coeff_mean, fill = mean_cat)) + 
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = c("#4D4DF5", "#ED706B")) +
-  coord_flip() +
-  scale_y_continuous(limits = c(-0.4, 0.45)) + 
-  theme(legend.position = "none",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())
-plot_epi = ggplot(mean_coeff_final, aes(x = rsID, y = coefficient_epi, fill = epi_cat)) + 
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = c("#4D4DF5", "#ED706B")) +
-  coord_flip() +
-  scale_y_continuous(limits = c(-0.4, 0.45)) + 
-  theme(legend.position = "none",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())
-plot_ad = ggplot(mean_coeff_final, aes(x = rsID, y = coefficient_ad, fill = ad_cat)) + 
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = c("#4D4DF5", "#ED706B")) +
-  coord_flip() + 
-  scale_y_continuous(limits = c(-0.4, 0.45)) +
-  theme(legend.position = "none",
-        axis.title.x = element_blank(),
-        axis.title.y = element_blank())
-```
-
-```{r}
-pdf(paste0(output_path, "coef_plot.pdf"), width = 15, height = 5)
-grid.arrange(plot_epi, plot_ad, plot_mean, nrow = 1)
-dev.off()
-```
 
 
-# Part 3. Explore shared risk score
-```{r}
-levels(quantcut(explore_df_final$shared_RS, q = 5, na.rm = T))
-explore_df_final = explore_df_final %>% 
-  mutate(high_sharedRS = if_else(shared_RS > 0.559, 1, 0),
-         low_sharedRS = if_else(shared_RS <= 0.053, 1, 0)) %>% 
-  mutate(condition = case_when(
-    epilepsy == 0 & ad == 0 ~ "none",
-    epilepsy == 0 & ad == 1 ~ "AD only",
-    epilepsy == 1 & ad == 0 ~ "epilepsy only",
-    epilepsy == 1 & ad == 1 ~ "both"
-  ))
-explore_df_short = explore_df_final %>% 
-  filter(high_sharedRS == 1 | low_sharedRS == 1)
-```
 
-## Top 20% vs. bottom 20% score
-```{r}
-explore_df_short %>% mutate(high_sharedRS.cat = as.factor(high_sharedRS),
-                      female.cat = as.factor(female)) %>%
-  mutate(n_conditions = epilepsy + dementia) %>% 
-  dplyr::select(high_sharedRS.cat, age_last_visit, female.cat, record_length, enc_per_yr, 
-         epilepsy, e4count, dementia, htn, diabetes, stroke, hyperlipid, ad, 
-         epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, n_conditions,
-         condition) %>% 
-  tbl_summary(by = high_sharedRS.cat) %>% add_p()
-```
-
-## Number of conditions
-```{r}
-explore_df_final %>% 
-  mutate(high_sharedRS.cat = as.factor(high_sharedRS),
-         female.cat = as.factor(female)) %>%
-  dplyr::select(high_sharedRS.cat, age_last_visit, female.cat, record_length, 
-         enc_per_yr, epilepsy, e4count, dementia, htn, diabetes, stroke, 
-         hyperlipid, ad, epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, 
-         condition, shared_RS) %>% 
-  tbl_summary(by = condition) %>% add_p()
-```
-
-## Forest plot
-```{r}
-var_names = c('epilepsy', 'ad', 'dementia', # 3
-              'age_last_visit', 'female', 'record_length', 'enc_per_yr', # 4
-              'htn', 'diabetes', 'stroke', 'hyperlipid', # 4
-              'e4count') # 1
-explanary_names = c('Late-onset Epilepsy', "Alzheimer's Disease", 'Dementia', 
-                    'Age at last visit', 'Sex (female)', 'EHR record length', 
-                    'EHR record density', 'Hypertension', 'Diabetes', 'Stroke', 
-                    'Hyperlipid', 'APOE-e4 allele count')
-
-model_lst = list()
-for (i in 1:length(var_names)) {
-  model_lst[[i]] = lm(as.formula(paste0('shared_RS ~ ', var_names[i], 
-                                        " + PC1 + PC2 + PC3 + PC4")),
-                      data = explore_df_short)
-}
-table1 = build_coef_table(var_names, model_lst)
-
-forest.data = table1 %>% 
-  dplyr::select(beta, lower_CI, upper_CI) %>% 
-  mutate(sub = c('Primary outcomes', rep(NA, 2), 
-                 'Demographics', rep(NA, 3), 
-                 'Health conditions' , rep(NA, 3),
-                 'AD genetics', rep(NA, 0))) %>% 
-  mutate(beta = round(as.numeric(as.character(beta)), 3),
-         lower_CI = round(as.numeric(as.character(lower_CI)), 3),
-         upper_CI = round(as.numeric(as.character(upper_CI)), 3)) %>% 
-  mutate(class = c(rep(2, 3), rep(3, 4), rep(4, 4), rep(5, 1)))
-
-tabletext = cbind(
-  c("Category", "\n", forest.data$sub),
-  c("Exposure", "\n", explanary_names),
-  c("Beta coefficient (95% CI)", "\n", as.character(table1$text))
-)
-pop.cols = c("black","black","black", "black", "black")
-```
-
-```{r}
-pdf(paste0(output_path, "Shared_RS_Forest.pdf"), width = 10, height = 5)
-forestplot(labeltext = tabletext, graph.pos = 1,
-           mean = c(NA, NA, forest.data$beta), 
-           lower = c(NA, NA, forest.data$lower_CI),
-           upper = c(NA, NA, forest.data$upper_CI),
-           xticks = c(-0.1, 0, 0.1, 0.2, 0.3, 0.4),
-           zero = 0,
-           title = "Figure 4. Associations between covariates and shared genetic risk score (n = 18,742)",
-           xlab = "Effect Size",
-           txt_gp = fpTxtGp(label = list(gpar(fontface = "bold", cex = 0.8, 
-                                              fontfamily = "serif"),
-                                         gpar(cex = 0.8, fontfamily = "serif"),
-                                         gpar(cex = 0.8, fontfamily = "serif")),
-                            ticks = gpar(cex = 0.6, fontfamily = "serif"),
-                            xlab = gpar(cex = 0.7, fontfamily = "serif"),
-                            title = gpar(cex = 1, fontfamily = "serif")),
-           col = fpColors(text = pop.cols[c(1, 1, forest.data$class)], 
-                          box  ="black",
-                          lines = "black", 
-                          zero ="gray50"),
-           cex = 0.2, lineheight = "auto", boxsize = 0.25, 
-           lwd.ci = 1, ci.vertices = TRUE, ci.vertices.height = 0.15)
-dev.off()
-```
 
 
 ## Causal inference
