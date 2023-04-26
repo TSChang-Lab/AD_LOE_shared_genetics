@@ -1,0 +1,53 @@
+---
+title: "3_sensitivity and interpretations"
+author: "Joy_Fu"
+date: "2023-04-10"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+pacman::p_load(tidyverse, gtsummary, epiflow, PheWAS)
+raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
+# Source in useful functions
+source("functions.R")
+
+load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR_04112023.rda"))
+```
+
+# Part 1. Phecodes & ICD-10
+## 1. Epilepsy
+```{r}
+epi_phecode = c("345", "345.1", "345.11", "345.12", "345.3")
+icd_short = icd.data::icd10cm2016 %>% as.data.frame() %>% 
+  mutate(code = as.character(code)) %>% 
+  select(code, long_desc) %>% dplyr::rename("code_nodigit" = "code")
+epi_tbl = PheWAS::phecode_map %>% 
+  filter(vocabulary_id == "ICD10CM" & phecode %in% epi_phecode) %>% 
+  mutate(code_nodigit = str_replace(code, "\\.", "")) %>% 
+  left_join(icd_short, by = "code_nodigit") %>% 
+  select(phecode, code, long_desc) %>% unique() %>% drop_na() %>% 
+  mutate(long_desc = gsub("<0xa0>", " ", long_desc))
+write_delim(epi_tbl, delim = "\t", 
+            file = paste0(output_path, "epi_phecode_tbl.txt"), quote = "none")
+```
+
+## 2. AD
+```{r}
+ad_tbl = PheWAS::phecode_map %>% 
+  filter(vocabulary_id == "ICD10CM" & phecode == "290.11") %>% 
+  mutate(code_nodigit = str_replace(code, "\\.", "")) %>% 
+  left_join(icd_short, by = "code_nodigit") %>% 
+  select(phecode, code, long_desc) %>% unique() %>% drop_na() %>% 
+  mutate(long_desc = gsub("<0xa0>", " ", long_desc))
+write_delim(ad_tbl, delim = "\t", 
+            file = paste0(output_path, "ad_phecode_tbl.txt"), quote = "none")
+```
+
+
+# Part 2. 
