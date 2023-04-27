@@ -331,26 +331,26 @@ source("functions.R")
 ## 1. Find matched SNPs
 ### 1) AD phenotype
 ```{r}
-candidate_snps_AD = read.table(file = paste0(FUMA_data_path, "FUMA_AD_EUR/snps.txt"), 
+candidate_snps_AD = read.table(file = paste0(FUMA_data_path, "FUMA_AD_new/snps.txt"), 
                                header = T, sep = "\t", fill = T)
 candidate_snps_short_AD = candidate_snps_AD %>% 
   dplyr::rename("a0" = "non_effect_allele", "a1" = "effect_allele") %>% 
   filter(posMapFilt == 1 | eqtlMapFilt == 1 | ciMapFilt == 1) %>% 
   select(rsID, chr, pos, a0, a1, gwasP, CADD, r2, IndSigSNP, GenomicLocus) %>% 
   mutate(phenotype = "AD")
-dim(candidate_snps_short_AD) # dim = (1984,11)
+dim(candidate_snps_short_AD) # dim = (2089,11)
 ```
 
 ### 2) Epilepsy phenotype
 ```{r}
-candidate_snps_epilepsy = read.table(file = paste0(FUMA_data_path, "FUMA_general_epilepsy/snps.txt"), 
+candidate_snps_epilepsy = read.table(file = paste0(FUMA_data_path, "FUMA_general_epilepsy_new/snps.txt"), 
                                      header = T, sep = "\t", fill = T)
 candidate_snps_short_epilepsy = candidate_snps_epilepsy %>% 
   dplyr::rename("a0" = "non_effect_allele", "a1" = "effect_allele") %>% 
   filter(posMapFilt == 1 | eqtlMapFilt == 1 | ciMapFilt == 1) %>% 
   select(rsID, chr, pos, a0, a1, gwasP, CADD, r2, IndSigSNP, GenomicLocus) %>% 
   mutate(phenotype = "epilepsy")
-dim(candidate_snps_short_epilepsy) # dim = (575,11)
+dim(candidate_snps_short_epilepsy) # dim = (678,11)
 ```
 
 ```{r}
@@ -381,7 +381,7 @@ candidate_snps_liftover = candidate_hg19 %>%
             by = c("No" = "group", "chr" = "chr")) %>% select(-pos) %>% 
   dplyr::rename("pos" = "start") %>% 
   filter(!is.na(chr) & !is.na(pos)) %>% unique() 
-dim(candidate_snps_liftover) # dim = 2548,12
+dim(candidate_snps_liftover) # dim = 2756,12
 # 3. Extract and clean ATLAS data -- Server step
 snp_to_extract = candidate_snps_liftover %>% 
   mutate(chr_pos_name1 = paste0("chr", chr, ":", pos, ":", a0, ":", a1),
@@ -389,7 +389,7 @@ snp_to_extract = candidate_snps_liftover %>%
 name1_out = snp_to_extract %>% pull(chr_pos_name1) %>% unique()
 name2_out = snp_to_extract %>% pull(chr_pos_name2) %>% unique()
 name_out_full = c(name1_out, name2_out) %>% unique()
-length(name_out_full) # length = 4700
+length(name_out_full) # length = 5512
 # Write output for snp extraction on server
 write.table(name_out_full,
             file = paste0(raw_data_path, "sumstats/AD_epilepsy_wdup.txt"),
@@ -409,7 +409,7 @@ names(map) = c("chr", "uniqueID", "pos", "a1", "a0")
 rsid_map_beta_align = snp_to_extract %>% 
   select(rsID, chr, pos, a1, a0, gwasP, CADD) %>% 
   dplyr::rename("beta" = "CADD") %>% unique()
-info_snp = snp_match(rsid_map_beta_align, map) # 1804 variants have been matched
+info_snp = snp_match(rsid_map_beta_align, map) # 1958 variants have been matched
 ```
 
 ## 2. Select mapped SNPs
@@ -420,7 +420,7 @@ mapped_snp = info_snp %>% select(rsID, uniqueID) %>%
   mutate(rank_CADD = row_number()) %>% ungroup() %>% 
   filter(rank_CADD == 1 | rsID == IndSigSNP)
 save(mapped_snp, file = paste0(raw_data_path, "modeling/EUR/mapped_snp.rda"))
-# Check how many mapped SNPs are IndSigSNP (N = 98)
+# Check how many mapped SNPs are IndSigSNP (N = 97)
 ttt = mapped_snp %>% group_by(IndSigSNP) %>% summarise(n = n())
 table(ttt$n)
 # Extract SNPs
@@ -437,7 +437,7 @@ genotype = obj.bigSNP$genotypes
 genotype.targ = snp_fastImputeSimple(obj.bigSNP$genotypes, method = 'mean2') 
 genotype_df = as.matrix(genotype.targ[])[,] %>% as.data.frame()
 colnames(genotype_df) = map$uniqueID
-dim(genotype_df) # 34463,2093
+dim(genotype_df) # 34463,2272
 rownames(genotype_df) = obj.bigSNP$fam$sample.ID
 ```
 
@@ -447,13 +447,13 @@ rownames(genotype_df) = obj.bigSNP$fam$sample.ID
 final2map = mapped_snp %>% filter(rank_CADD == 1) %>% 
   select(rsID, chr, pos, a1, a0, gwasP, phenotype, CADD, GenomicLocus) %>% 
   dplyr::rename("beta" = "CADD") %>% unique()
-final_map = snp_match(final2map, map) # 157 variants have been matched
+final_map = snp_match(final2map, map) # 162 variants have been matched
 ```
 
 ## 3. Finalize genome dataset
 ```{r}
 genotype_df_map = genotype_df %>% select(all_of(final_map$uniqueID))
-dim(genotype_df_map) # 34463,144
+dim(genotype_df_map) # 34463,162
 save(genotype_df_map, file = paste0(raw_data_path, 
                                     "modeling/EUR/genotype_df_map.rda"))
 # Need to exclude some columns (w/ large amount of missing data)
@@ -473,7 +473,7 @@ freeze60k_geno_freq = genotype_df_map %>%
   mutate(UniqueSampleId = as.numeric(UniqueSampleId)) %>% 
   # add phenotype info
   inner_join(patient_final_EUR) %>% column_to_rownames(var = "UniqueSampleId")
-dim(freeze60k_geno_freq) # dim = c(17306, 206)
+dim(freeze60k_geno_freq) # dim = c(17306, 211)
 save(freeze60k_geno_freq, file = paste0(raw_data_path, 
                                        "modeling/EUR/freeze60k_geno_freq.rda"))
 ```
