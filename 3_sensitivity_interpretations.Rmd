@@ -11,13 +11,11 @@ knitr::opts_chunk$set(echo = TRUE)
 
 ```{r}
 rm(list = ls())
-pacman::p_load(tidyverse, gtsummary, epiflow, PheWAS)
+pacman::p_load(tidyverse, gtsummary, epiflow, PheWAS, UpSetR)
 raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
 output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
 # Source in useful functions
 source("functions.R")
-
-load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR_04112023.rda"))
 ```
 
 # Part 1. Phecodes & ICD-10
@@ -49,5 +47,176 @@ write_delim(ad_tbl, delim = "\t",
             file = paste0(output_path, "ad_phecode_tbl.txt"), quote = "none")
 ```
 
+# Part 2. Shared genes
+```{r}
+load(file = paste0(raw_data_path, "modeling/EUR/snps_interpret/rsID_check_AD.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/snps_interpret/rsID_check_epi.rda"))
+loe_df = cbind(loe_set, rep(1, length(loe_set))) %>% as.data.frame()
+names(loe_df) = c("gene", "LOE_specific")
+ad_df = cbind(ad_set, rep(1, length(ad_set))) %>% as.data.frame()
+names(ad_df) = c("gene", "AD_specific")
+shared_df = cbind(shared_set, rep(1, length(shared_set))) %>% as.data.frame()
+names(shared_df) = c("gene", "Shared")
 
-# Part 2. 
+genes_df = shared_df %>% full_join(ad_df) %>% full_join(loe_df) %>% 
+  mutate(Shared = as.numeric(Shared),
+         AD_specific = as.numeric(AD_specific),
+         LOE_specific = as.numeric(LOE_specific))
+# Replace NAs with 0
+genes_df[is.na(genes_df)] = 0
+```
+
+```{r}
+pdf(paste0(output_path, "upset_shared.pdf"), width = 8, height = 5)
+upset(genes_df, sets = c("Shared", "AD_specific", "LOE_specific"), 
+      sets.bar.color = "#56B4E9",
+      order.by = "freq", empty.intersections = "on")
+dev.off()
+```
+
+
+# Part 3. High vs. Low pred scores
+```{r}
+load(file = paste0(raw_data_path, "modeling/EUR/explore_df_final.rda"))
+```
+
+
+
+## 1. Top 20% vs. bottom 20% score
+```{r}
+explore_df_short = explore_df_final %>% 
+  filter(high_pred_score == 1 | low_pred_score == 1)
+explore_df_short %>% 
+  mutate(n_conditions = epilepsy + AD) %>% 
+  dplyr::select(high_pred_score, age_last_visit, female, record_length, enc_per_yr, 
+         epilepsy, e4count, dementia, htn, diabetes, hyperlipid, AD, 
+         epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, n_conditions,
+         condition, AD_PRS_full_norm, AD_PRS_rmapoe_norm) %>% 
+  tbl_summary(by = high_pred_score) %>% add_p()
+```
+
+## 2. Number of conditions
+```{r}
+explore_df_final %>% 
+  mutate(high_sharedRS.cat = as.factor(high_sharedRS),
+         female.cat = as.factor(female)) %>%
+  dplyr::select(high_sharedRS.cat, age_last_visit, female.cat, record_length, 
+         enc_per_yr, epilepsy, e4count, dementia, htn, diabetes, stroke, 
+         hyperlipid, ad, epi_age_diagnosis, dem_age_diagnosis, ad_age_diagnosis, 
+         condition, shared_RS) %>% 
+  tbl_summary(by = condition) %>% add_p()
+```
+
+## 3. Forest plot
+```{r}
+var_names = c('epilepsy', 'AD', 'dementia', # 3
+              'age_last_visit', 'female', 'record_length', 'enc_per_yr', # 4
+              'htn', 'diabetes', 'hyperlipid', # 3
+              'e4count', 'AD_PRS_full_norm', 'AD_PRS_rmapoe_norm') # 3
+explanary_names = c('Late-onset Epilepsy', "Alzheimer's Disease", 'Dementia', 
+                    'Age at last visit', 'Sex (female)', 'EHR record length', 
+                    'EHR record density', 'Hypertension', 'Diabetes', 'Hyperlipid', 
+                    'APOE-e4 allele count', 'AD PRS full', 'AD PRS w/o APOE')
+
+model_lst = list()
+for (i in 1:length(var_names)) {
+  model_lst[[i]] = lm(as.formula(paste0('pred_score ~ ', var_names[i], 
+                                        " + PC1 + PC2 + PC3 + PC4")),
+                      data = explore_df_short)
+}
+table1 = build_coef_table(var_names, model_lst)
+
+forest.data = table1 %>% 
+  dplyr::select(beta, lower_CI, upper_CI) %>% 
+  mutate(sub = c('Primary outcomes', rep(NA, 2), 
+                 'Demographics', rep(NA, 3), 
+                 'Health conditions' , rep(NA, 2),
+                 'AD genetics', rep(NA, 2))) %>% 
+  mutate(beta = round(as.numeric(as.character(beta)), 3),
+         lower_CI = round(as.numeric(as.character(lower_CI)), 3),
+         upper_CI = round(as.numeric(as.character(upper_CI)), 3)) %>% 
+  mutate(class = c(rep(2, 3), rep(3, 4), rep(4, 3), rep(5, 3)))
+
+tabletext = cbind(
+  c("Category", "\n", forest.data$sub),
+  c("Exposure", "\n", explanary_names),
+  c("Beta coefficient (95% CI)", "\n", as.character(table1$text))
+)
+pop.cols = c("black","black","black", "black", "black")
+```
+
+```{r}
+pdf(paste0(output_path, "Shared_RS_Forest.pdf"), width = 10, height = 5)
+forestplot(labeltext = tabletext, graph.pos = 1,
+           mean = c(NA, NA, forest.data$beta), 
+           lower = c(NA, NA, forest.data$lower_CI),
+           upper = c(NA, NA, forest.data$upper_CI),
+           xticks = c(-0.05, 0, 0.05, 0.1, 0.15, 0.2, 0.25),
+           zero = 0,
+           title = "Figure 4. Associations between covariates and shared genetic risk score (n = 18,742)",
+           xlab = "Effect Size",
+           txt_gp = fpTxtGp(label = list(gpar(fontface = "bold", cex = 0.8, 
+                                              fontfamily = "serif"),
+                                         gpar(cex = 0.8, fontfamily = "serif"),
+                                         gpar(cex = 0.8, fontfamily = "serif")),
+                            ticks = gpar(cex = 0.6, fontfamily = "serif"),
+                            xlab = gpar(cex = 0.7, fontfamily = "serif"),
+                            title = gpar(cex = 1, fontfamily = "serif")),
+           col = fpColors(text = pop.cols[c(1, 1, forest.data$class)], 
+                          box  ="black",
+                          lines = "black", 
+                          zero ="gray50"),
+           cex = 0.2, lineheight = "auto", boxsize = 0.25, 
+           lwd.ci = 1, ci.vertices = TRUE, ci.vertices.height = 0.15)
+dev.off()
+```
+
+# Part 4. Causal inference
+### 1) New dataset (onset before)
+```{r}
+causation_prep = explore_df_final %>% 
+  mutate(epilepsy_before = case_when(
+    epilepsy == 1 & !is.na(ad_age_diagnosis) & (epi_age_diagnosis < ad_age_diagnosis) ~ 1,
+    epilepsy == 1 & is.na(ad_age_diagnosis) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(ad_before = case_when(
+    ad == 1 & !is.na(epi_age_diagnosis) & (ad_age_diagnosis < epi_age_diagnosis) ~ 1,
+    ad == 1 & is.na(epi_age_diagnosis) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(diff_year = ad_age_diagnosis - epi_age_diagnosis)
+table(causation_prep$epilepsy, causation_prep$epilepsy_before, useNA = "ifany")
+table(causation_prep$ad, causation_prep$ad_before, useNA = "ifany")
+
+```
+
+
+
+```{r}
+ad_epi = glm(paste0('ad ~ epilepsy_before + ', demo_basic, 
+                      ' + ', health_info), 
+              data = causation_prep, family = 'binomial')
+summary(ad_epi)
+```
+
+```{r}
+ad_epi_gen = glm(paste0('ad ~ epilepsy_before + shared_RS + ', demo_basic, 
+                      ' + ', health_info), 
+              data = causation_prep, family = 'binomial')
+summary(ad_epi_gen)
+```
+
+
+```{r}
+epi_ad = glm(paste0('epilepsy ~ ad_before + shared_RS +', demo_basic, 
+                      ' + ', health_info), 
+              data = causation_prep, family = 'binomial')
+summary(epi_ad)
+```
+
+
+```{r}
+names(explore_df_final)
+```
+
