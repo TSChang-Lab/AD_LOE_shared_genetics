@@ -80,8 +80,6 @@ dev.off()
 load(file = paste0(raw_data_path, "modeling/EUR/explore_df_final.rda"))
 ```
 
-
-
 ## 1. Top 20% vs. bottom 20% score
 ```{r}
 explore_df_short = explore_df_final %>% 
@@ -171,6 +169,7 @@ forestplot(labeltext = tabletext, graph.pos = 1,
 dev.off()
 ```
 
+#==== stopped here 4/28 ====
 # Part 4. Causal inference
 ### 1) New dataset (onset before)
 ```{r}
