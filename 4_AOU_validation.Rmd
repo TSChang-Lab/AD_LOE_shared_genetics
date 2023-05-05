@@ -1,0 +1,315 @@
+---
+title: "4_AOU_validation"
+author: "Joy_Fu"
+date: "2023-05-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r message=FALSE, warning=FALSE}
+rm(list = ls())
+lapply(paste('package:', names(sessionInfo()$otherPkgs), sep = ""),
+       detach, character.only = TRUE, unload = TRUE)
+pacman::p_load(tidyverse, gtsummary, epiflow, gtools, caret, gridExtra, forestplot, h2o)
+raw_data_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/Mingzhou/Desktop/Projects/AD-LOE-genetics/output/"
+# Source in useful functions
+source("functions.R")
+
+# Load in UCLA datasets
+load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/freeze60k_geno_freq.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/genotype_df_map.rda"))
+# Load in AOU datasets
+load(file = paste0(raw_data_path, "AOU/enc_demo_filtered.rda"))
+load(file = paste0(raw_data_path, "AOU/patient_ehr.rda"))
+```
+
+# Part 1. AOU EHR data cleaning
+```{r}
+# Map to phecodes
+enc_phecode_map = enc_demo_filtered %>% 
+  mutate(vocabulary_id = "ICD10CM") %>% 
+  left_join(PheWAS::phecode_map, by = c("vocabulary_id" = "vocabulary_id",
+                                        "source_concept_code" = "code")) %>% unique()
+dim(enc_phecode_map) # dim = (2522029,9)
+# Collapse to phecode-level first diagnosis
+enc_phecode_map_first = enc_phecode_map %>% 
+  group_by(person_id, phecode) %>% 
+  arrange(StartDate) %>% slice_head(n = 1) %>% ungroup() %>% unique() %>% 
+  select(-source_concept_code)
+dim(enc_phecode_map_first) # dim = (1892827,8)
+# Save the phenotype data table
+save(enc_phecode_map_first, 
+     file = paste0(raw_data_path, "AOU/enc_phecode_map_first.rda"))
+```
+
+## 1. Define epilepsy
+```{r}
+# Select epilepsy case and controls
+epi_phecode = c("345", "345.1", "345.11", "345.12", "345.3")
+epi_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% epi_phecode) %>% 
+  filter(age_diagnosis >= 60) %>% group_by(person_id) %>% 
+  mutate(epi_age_diagnosis = min(age_diagnosis),
+         EpilepsyDate = min(StartDate)) %>% 
+  select(person_id, EpilepsyDate, epi_age_diagnosis) %>% 
+  unique() %>% left_join(patient_ehr) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90) %>% mutate(epilepsy = 1)
+dim(epi_case_info) # dim = (1247,10)
+```
+
+```{r}
+# exclude those with confounding phenotype (exclusion criteria by PheWAS)
+epi_exclude_phecode = PheWAS::phecode_exclude %>% 
+  filter(code %in% epi_phecode) %>% pull(exclusion_criteria) %>% unique()
+epi_control_exclude_Id = enc_phecode_map_first %>% 
+  filter(person_id %!in% epi_case_info$person_id) %>% 
+  filter(phecode %in% epi_exclude_phecode) %>% pull(person_id) %>% unique()
+# N = 5112
+# control info
+epi_control_info = patient_ehr %>% 
+  filter(person_id %!in% epi_case_info$person_id) %>% 
+  filter(person_id %!in% epi_control_exclude_Id) %>% 
+  mutate(epilepsy = 0, EpilepsyDate = NA, epi_age_diagnosis = NA) %>% 
+  select(names(epi_case_info)) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90)
+dim(epi_control_info) # dim = (37687,10)
+```
+
+```{r}
+# combine cases and controls
+epi_patients_full = rbind(epi_case_info, epi_control_info) %>% as.data.frame()
+dim(epi_patients_full) # dim = (38934,10)
+```
+
+## 2. Define AD
+```{r}
+ad_phecode = c("290.11")
+ad_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% ad_phecode) %>% group_by(person_id) %>% 
+  mutate(ad_age_diagnosis = min(age_diagnosis),
+         ADDate = min(StartDate)) %>% 
+  select(person_id, ADDate, ad_age_diagnosis) %>% 
+  unique() %>% left_join(patient_ehr) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90) %>% mutate(AD = 1)
+dim(ad_case_info) # dim = (274,10)
+```
+
+```{r}
+# exclude those with confounding phenotype (exclusion criteria by PheWAS)
+ad_exclude_phecode = PheWAS::phecode_exclude %>% 
+  filter(code %in% ad_phecode) %>% pull(exclusion_criteria) %>% unique()
+ad_control_exclude_Id = enc_phecode_map_first %>% 
+  filter(person_id %!in% ad_case_info$person_id) %>% 
+  filter(phecode %in% ad_exclude_phecode) %>% pull(person_id) %>% unique()
+# N = 6041
+# control info
+ad_control_info = patient_ehr %>% 
+  filter(person_id %!in% ad_case_info$person_id) %>% 
+  filter(person_id %!in% ad_control_exclude_Id) %>% 
+  mutate(AD = 0, ADDate = NA, ad_age_diagnosis = NA) %>% 
+  select(names(ad_case_info)) %>% 
+  filter(age_last_visit >= 60 & age_last_visit < 90)
+dim(ad_control_info) # dim = (38314,10)
+```
+
+```{r}
+# combine cases and controls
+ad_patients_full = rbind(ad_case_info, ad_control_info) %>% as.data.frame()
+dim(ad_patients_full) # dim = (38588,10)
+```
+
+## 3. Left join find overlap
+```{r}
+patient_eligible = epi_patients_full %>% 
+  full_join(ad_patients_full) %>% 
+  filter(record_length > 0 & n_encounter >= 2)
+dim(patient_eligible) # dim = (43351,13)
+save(patient_eligible,
+     file = paste0(raw_data_path, "AOU/patient_eligible.rda"))
+```
+
+## 4. Also add other covariates
+### 1) HTN
+```{r}
+htn_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% c("401.1")) %>% group_by(person_id) %>% 
+  mutate(htn_age_diagnosis = min(age_diagnosis),
+         HTNDate = min(StartDate)) %>% 
+  select(person_id, HTNDate, htn_age_diagnosis) %>% unique()
+dim(htn_case_info) # dim = (27298,3)
+```
+
+### 2) Diabetes
+```{r}
+diab_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% c("250.2")) %>% group_by(person_id) %>% 
+  mutate(diab_age_diagnosis = min(age_diagnosis),
+         DiabetesDate = min(StartDate)) %>% 
+  select(person_id, DiabetesDate, diab_age_diagnosis) %>% unique()
+dim(diab_case_info) # dim = (9601,3)
+```
+
+### 3) Hyperlipid
+```{r}
+hyperlipid_case_info = enc_phecode_map_first %>% 
+  filter(phecode %in% c("272.1")) %>% group_by(person_id) %>% 
+  mutate(hyperlipid_age_diagnosis = min(age_diagnosis),
+         HyperlipidDate = min(StartDate)) %>% 
+  select(person_id, HyperlipidDate, hyperlipid_age_diagnosis) %>% unique()
+dim(hyperlipid_case_info) # dim = (24821,3)
+```
+
+## 5. Combine all
+```{r}
+patient_final_AOU = patient_eligible %>% 
+  left_join(htn_case_info) %>% left_join(diab_case_info) %>% 
+  left_join(hyperlipid_case_info) %>% 
+  mutate(female = if_else(gender == "Female", 1, 0)) %>% 
+  mutate(enc_per_yr = n_encounter/record_length) %>% 
+  mutate(htn = if_else(!is.na(HTNDate), 1, 0),
+         diabetes = if_else(!is.na(DiabetesDate), 1, 0),
+         hyperlipid = if_else(!is.na(HyperlipidDate), 1, 0)) %>% 
+  mutate(either = case_when(
+    AD == 0 & epilepsy == 0 ~ 0,
+    TRUE ~ 1
+  )) %>% 
+  mutate(both = case_when(
+    AD == 1 & epilepsy == 1 ~ 1,
+    AD == 0 & epilepsy == 0 ~ 0
+  )) %>% 
+  filter(!is.na(either)) %>% filter(!is.na(AD) | !is.na(epilepsy)) %>% 
+  select(person_id, AD, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
+         age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, hyperlipid, either, both) 
+save(patient_final_AOU, file = paste0(raw_data_path, "AOU/patient_final_AOU.rda"))
+```
+
+## 6. Descriptive statistics
+```{r}
+patient_final_AOU %>% mutate(epi.cat = as.factor(epilepsy)) %>% 
+  select(epi.cat, AD, either, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, hyperlipid) %>% 
+  tbl_summary(by = epi.cat) %>% add_p()
+```
+
+```{r}
+patient_final_AOU %>% mutate(AD.cat = as.factor(AD)) %>% 
+  select(AD.cat, epilepsy, either, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, hyperlipid) %>% 
+  tbl_summary(by = AD.cat) %>% add_p()
+```
+
+# Part 2. AOU genetic data cleaning
+## 1. Server step - extract LASSO either SNPs
+```{r}
+# Output LASSO either SNPs to extract from AOU
+load(file = paste0(raw_data_path, "modeling/EUR/snps_interpret/rsID_check_AD.rda"))
+lasso_either_snp = rsID_check_AD %>% filter(snps_either == 1) %>% 
+  mutate(pos_plus = as.character(as.numeric(pos) + 1)) %>% 
+  mutate(output_var = paste0("chr", chr, ":", pos, "-", pos_plus)) %>% 
+  select(chr, pos, a0, a1, output_var)
+write.table(lasso_either_snp, 
+            file = paste0(output_path, "lasso_either_forAOU.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+## 2. Preprocess PLINK
+```{r warning=FALSE}
+# Read in the QCed genotype and sumstats files + preprocess the bed file (only need to do once for each data set)
+geno_file = paste0(raw_data_path, 'AOU/epilepsy_snp_plink')
+snp_readBed(paste0(geno_file, '.bed'))
+obj.bigSNP = snp_attach(paste0(geno_file, '.rds'))
+# extract the SNP information from the genotype
+map_AOU = obj.bigSNP$map[-3]
+names(map_AOU) = c("chr", "uniqueID", "pos", "a1", "a0")
+# Rename to fix the naming problem
+rename_df = rsID_check_AD %>% filter(snps_either == 1) %>% 
+  select(chr, pos, uniqueID) %>% dplyr::rename(renameID = uniqueID)
+
+map_AOU_check = map_AOU %>% 
+  mutate(chr = as.numeric(str_sub(chr, start = 4)),
+         pos = as.numeric(pos)) %>% 
+  left_join(rename_df, by = c("chr", "pos"))
+```
+
+```{r}
+# Get genotyped data
+genotype = obj.bigSNP$genotypes
+# genotype.targ = snp_fastImputeSimple(obj.bigSNP$genotypes, method = 'mean2') 
+genotype_df = as.matrix(genotype[])[,] %>% as.data.frame()
+colnames(genotype_df) = map_AOU_check$renameID
+dim(genotype_df) # 245394,34
+rownames(genotype_df) = obj.bigSNP$fam$sample.ID
+```
+
+## 3. Finalize genetic dataset
+```{r}
+genotype_df_AOU = genotype_df %>% 
+  rownames_to_column(var = "person_id") %>% 
+  mutate(person_id = as.numeric(person_id)) %>% 
+  right_join(patient_final_AOU)
+dim(genotype_df_AOU) # dim = (43351,48)
+save(genotype_df_AOU, file = paste0(raw_data_path, "AOU/genotype_df_AOU.rda"))
+```
+
+# Part 3. Rebuild UCLA ATLAS model and fit AOU
+```{r}
+load(file = paste0(raw_data_path, "modeling/EUR/model_df_prep.rda"))
+demo_set_noPC = c("female", "age_last_visit", "record_length", "enc_per_yr")
+Y = "either"
+h2o.init(nthreads = -1)
+seed_num = 4766
+```
+
+## 1. Retrain model w/o PC
+```{r}
+target.train = as.h2o(model_df_prep)
+target.train[,Y] = as.factor(target.train[,Y])
+target.test = as.h2o(genotype_df_AOU)
+target.test[,Y] = as.factor(target.test[,Y])
+snps_either = rsID_check_AD %>% filter(snps_either == 1) %>% pull(uniqueID)
+# Build new model without PCs
+X = c(demo_set_noPC, snps_either)
+SNP.lasso.either.pred = h2o.glm(training_frame = target.train, x = X, y = Y, 
+                                balance_classes = T, model_id = "LASSO either pred", 
+                                nfolds = 5, fold_assignment = "Stratified", 
+                                seed = seed_num, family = "binomial", lambda = 0, 
+                                standardize = T, keep_cross_validation_models = F)
+either.pred = h2o.predict(SNP.lasso.either.pred, target.test) %>% as.data.frame()
+either.pred.train = h2o.predict(SNP.lasso.either.pred, target.train) %>% as.data.frame()
+
+quantcut(either.pred.train$p1, q = 5, na.rm = T) %>% levels()
+```
+
+## Top vs. Bottom 20% 
+```{r}
+genotype_df_AOU_add = cbind(genotype_df_AOU, either.pred$p1) 
+names(genotype_df_AOU_add)[49] = "pred_score"
+# Cut with quintiles
+genotype_df_AOU_add = genotype_df_AOU_add %>% 
+  mutate(high_pred_score = if_else(pred_score > 0.38, 1, 0),
+         low_pred_score = if_else(pred_score <= 0.204, 1, 0)) %>% 
+  mutate(condition = case_when(
+    epilepsy == 0 & AD == 0 ~ "none",
+    epilepsy == 1 & AD == 1 ~ "both",
+    AD == 1 ~ "AD only",
+    epilepsy == 1 ~ "LOE only",
+  )) 
+```
+
+```{r}
+genotype_df_AOU_compare = genotype_df_AOU_add %>% 
+  filter(high_pred_score == 1 | low_pred_score == 1)
+genotype_df_AOU_compare %>% 
+  mutate(n_conditions = epilepsy + AD) %>% 
+  dplyr::select(high_pred_score, age_last_visit, female, record_length, enc_per_yr, 
+         epilepsy, htn, diabetes, hyperlipid, AD, 
+         epi_age_diagnosis, ad_age_diagnosis, n_conditions, condition) %>% 
+  tbl_summary(by = high_pred_score) %>% add_p()
+```
+
