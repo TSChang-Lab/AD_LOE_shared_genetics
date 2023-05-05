@@ -45,7 +45,7 @@ final_sample_EUR = patient_final_EUR %>%
   select(UniqueSampleId, AD, epilepsy, ad_age_diagnosis, epi_age_diagnosis, 
          age_last_visit, female, PC1, PC2, PC3, PC4, record_length, enc_per_yr, 
          htn, diabetes, stroke, hyperlipid, dementia, e4count,
-         AD_PRS_full_norm, AD_PRS_rmapoe_norm) 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, either, both) 
 dim(final_sample_EUR) # dim = (17031,23)
 ```
 
@@ -559,26 +559,31 @@ either_snp_coeff_top = either_snp_coeff %>%
   mutate(feature = case_when(
     names %in% demo_set ~ names,
     TRUE ~ rsID
-  )) %>% filter(abs(standardized_coefficients) >= 0.01) %>% 
+  )) %>% head(15) %>% 
   mutate(group = case_when(
     !is.na(phenotype) ~ phenotype,
     names %in% demo_set ~ "demographics"
   )) %>% mutate(magnitude = abs(standardized_coefficients)) %>% 
   select(names, feature, standardized_coefficients, magnitude,
-         phenotype, group, coeff_cat) 
+         phenotype, group, coeff_cat, CADD, nearestGene, dist, func, 
+         posMapFilt, eqtlMapFilt, ciMapFilt) 
 # create a new factor variable for sorting the x-axis
 either_snp_coeff_top$feature_sorted = reorder(either_snp_coeff_top$feature, 
                                               either_snp_coeff_top$magnitude)
 # Plot the coefficients
-pdf(paste0(output_path, "coef_plot.pdf"), width = 10, height = 5)
+pdf(paste0(output_path, "coef_plot2.pdf"), width = 4, height = 4)
 ggplot(either_snp_coeff_top, 
        aes(x = feature_sorted, y = magnitude, fill = coeff_cat)) + 
   geom_bar(stat = "identity") +
   scale_fill_manual(values = c("#4D4DF5", "#ED706B")) +
-  coord_flip() +
+  coord_flip() + 
   scale_y_continuous(limits = c(0, 0.06)) + 
   theme(legend.position = "none",
         axis.title.x = element_blank(),
         axis.title.y = element_blank())
 dev.off()
+
+write.table(either_snp_coeff_top,
+            file = paste0(output_path, "either_snp_coeff_top.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
 ```
