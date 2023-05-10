@@ -169,6 +169,40 @@ forestplot(labeltext = tabletext, graph.pos = 1,
 dev.off()
 ```
 
+# Part 4. ATLAS vs. AOU
+```{r}
+load(file = paste0(raw_data_path, "AOU/patient_final_AOU.rda"))
+load(file = paste0(raw_data_path, "modeling/EUR/patient_final_EUR.rda"))
+
+atlas_sample = patient_final_EUR %>% 
+  mutate(htn = if_else(!is.na(HTNDate), 1, 0),
+         diabetes = if_else(!is.na(DiabetesDate), 1, 0),
+         hyperlipid = if_else(!is.na(HyperlipidDate), 1, 0),
+         sample = "ATLAS") %>% 
+  mutate(either = case_when(
+    AD == 0 & epilepsy == 0 ~ 0,
+    TRUE ~ 1
+  )) %>% 
+  filter(!is.na(either)) %>% filter(!is.na(AD) | !is.na(epilepsy)) %>% 
+  select(AD, epilepsy, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, hyperlipid, sample) 
+dim(atlas_sample) # dim = (17031,10)
+
+aou_sample = patient_final_AOU %>% 
+  mutate(sample = "AOU") %>% 
+  select(AD, epilepsy, age_last_visit, female, record_length, enc_per_yr, 
+         htn, diabetes, hyperlipid, sample) 
+dim(aou_sample) # dim = (43351,10)
+```
+
+```{r}
+full_compare = rbind(atlas_sample, aou_sample) %>% as.data.frame()
+full_compare %>% 
+  tbl_summary(by = sample) %>% add_p()
+```
+
+
+
 #==== stopped here 4/28 ====
 # Part 4. Causal inference
 ### 1) New dataset (onset before)
