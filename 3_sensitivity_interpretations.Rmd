@@ -298,7 +298,7 @@ modelI_upper_epi = exp(modelI_ci[6,2])
 
 ## 3. Mediation
 ```{r}
-cma_res <- cmest(data = epi_med, model = 'rb', outcome = 'AD', exposure = 'quintile',
+cma_res = cmest(data = epi_med, model = 'rb', outcome = 'AD', exposure = 'quintile',
                  mediator = 'epilepsy', 
                  basec = c('age_last_visit', 'female', 'record_length', 'enc_per_yr', 'PC1',
                            'PC2', 'PC3', 'PC4', 'htn', 'diabetes', 'hyperlipid'),
