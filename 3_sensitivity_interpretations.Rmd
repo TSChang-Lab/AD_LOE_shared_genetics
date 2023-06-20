@@ -202,54 +202,110 @@ full_compare %>%
 ```
 
 
-
-#==== stopped here 4/28 ====
-# Part 4. Causal inference
-### 1) New dataset (onset before)
+# Part 5. Causal inference
 ```{r}
-causation_prep = explore_df_final %>% 
-  mutate(epilepsy_before = case_when(
-    epilepsy == 1 & !is.na(ad_age_diagnosis) & (epi_age_diagnosis < ad_age_diagnosis) ~ 1,
-    epilepsy == 1 & is.na(ad_age_diagnosis) ~ 1,
-    TRUE ~ 0
-  )) %>% 
-  mutate(ad_before = case_when(
-    ad == 1 & !is.na(epi_age_diagnosis) & (ad_age_diagnosis < epi_age_diagnosis) ~ 1,
-    ad == 1 & is.na(epi_age_diagnosis) ~ 1,
-    TRUE ~ 0
-  )) %>% 
-  mutate(diff_year = ad_age_diagnosis - epi_age_diagnosis)
-table(causation_prep$epilepsy, causation_prep$epilepsy_before, useNA = "ifany")
-table(causation_prep$ad, causation_prep$ad_before, useNA = "ifany")
-
+library(CMAverse)
+load("~/Desktop/Projects/AD-LOE-genetics/data/modeling/EUR/explore_df_final.rda")
 ```
 
-
-
+## 1. Data preprocessing
 ```{r}
-ad_epi = glm(paste0('ad ~ epilepsy_before + ', demo_basic, 
-                      ' + ', health_info), 
-              data = causation_prep, family = 'binomial')
-summary(ad_epi)
+# split prediction scores into quintiles
+explore_df_final = explore_df_final %>%
+  mutate(quintile = ntile(pred_score, 5)) %>%
+  relocate(quintile, .after = low_pred_score)
+
+table(explore_df_final$epilepsy)
+table(explore_df_final$AD)
+
+# remove missing info.
+# remove epilepsy patients with a recorded age at the time of AD diagnosis higher than that at the time of epilepsy diagnosis
+epi_med = explore_df_final %>%
+  drop_na(epilepsy, AD, age_last_visit, female, record_length, enc_per_yr, PC1, PC2, PC3, PC4, e4count) %>%
+  filter(if_else(epilepsy==1 & !is.na(ad_age_diagnosis), epi_age_diagnosis < ad_age_diagnosis, TRUE))
+
+table(epi_med$epilepsy)
+table(epi_med$AD)
+
+# add levels
+epi_med$e4count = factor(epi_med$e4count)
+epi_med$quintile = factor(epi_med$quintile, levels = c(1:5))
+```
+
+## 2. Assumption check
+```{r}
+### make sure mediation assumptions are met ###
+# assumption 1: prediction score (exposure) is significantly associated with AD status (outcome)
+model.0 = glm(AD ~ quintile + age_last_visit + female + record_length + enc_per_yr + PC1 + PC2 + PC3 + PC4 +
+                htn + diabetes + hyperlipid,
+              data = epi_med,
+              family ='binomial')
+
+summary(model.0)
+
+# assumption 2: prediction score is significantly associated with epilepsy status (mediator), 
+model.M = glm(epilepsy ~ quintile + age_last_visit + female + record_length + enc_per_yr + PC1 + PC2 + PC3 + PC4 +
+                htn + diabetes + hyperlipid,
+              data = epi_med,
+              family ='binomial')
+
+summary(model.M)
+
+# assumption 3: epilepsy status is significantly associated with AD status when regressing the latter on the former and prediction score
+# assumption 4: prediction score is less significantly associated in (3) than (1)
+model.Y = glm(AD ~ quintile + epilepsy + age_last_visit + female + record_length + enc_per_yr + PC1 + PC2 + PC3 + PC4 +
+                htn + diabetes + hyperlipid,
+              data = epi_med,
+              family ='binomial')
+
+summary(model.Y)
+
+# assumption 4: epilepsy and prediction score does not interact
+model.I = glm(AD ~ quintile * epilepsy + age_last_visit + female + record_length + enc_per_yr + PC1 + PC2 + PC3 + PC4 +
+                htn + diabetes + hyperlipid,
+              data = epi_med,
+              family ='binomial')
+summary(model.I)
 ```
 
 ```{r}
-ad_epi_gen = glm(paste0('ad ~ epilepsy_before + shared_RS + ', demo_basic, 
-                      ' + ', health_info), 
-              data = causation_prep, family = 'binomial')
-summary(ad_epi_gen)
+# caclulate ORs and CIs
+# ORs
+model0_quint5_or = exp(model.0[[1]][5])
+modelM_quint5_or = exp(model.M[[1]][5])
+modelY_quint5_or = exp(model.Y[[1]][5])
+modelI_quint5_or = exp(model.I[[1]][5])
+modelY_epi_or = exp(model.Y[[1]][6])
+modelI_epi_or = exp(model.I[[1]][6])
+# CIs
+model0_ci = confint(model.0)
+modelM_ci = confint(model.M)
+modelY_ci = confint(model.Y)
+modelI_ci = confint(model.I)
+model0_lower_quint5 = exp(model0_ci[5,1])
+model0_upper_quint5 = epx(model0_ci[5,2])
+modelM_lower_quint5 = exp(modelM_ci[5,1])
+modelM_upper_quint5 = exp(modelM_ci[5,2])
+modelY_lower_quint5 = exp(modelY_ci[5,1])
+modelY_upper_quint5 = exp(modelY_ci[5,2])
+modelI_lower_quint5 = exp(modelI_ci[5,1])
+modelI_upper_quint5 = exp(modelI_ci[5,2])
+modelY_lower_epi = exp(modelY_ci[6,1])
+modelY_upper_epi = exp(modelY_ci[6,2])
+modelI_lower_epi = exp(modelI_ci[6,1])
+modelI_upper_epi = exp(modelI_ci[6,2])
 ```
 
-
+## 3. Mediation
 ```{r}
-epi_ad = glm(paste0('epilepsy ~ ad_before + shared_RS +', demo_basic, 
-                      ' + ', health_info), 
-              data = causation_prep, family = 'binomial')
-summary(epi_ad)
-```
+cma_res <- cmest(data = epi_med, model = 'rb', outcome = 'AD', exposure = 'quintile',
+                 mediator = 'epilepsy', 
+                 basec = c('age_last_visit', 'female', 'record_length', 'enc_per_yr', 'PC1',
+                           'PC2', 'PC3', 'PC4', 'htn', 'diabetes', 'hyperlipid'),
+                 EMint = FALSE, mreg = list('logistic'), yreg = 'logistic',
+                 astar = 1, a = 5, mval = list(1), estimation = 'imputation', inference = 'bootstrap',
+                 nboot = 1000, boot.ci.type = 'per')
 
-
-```{r}
-names(explore_df_final)
+summary(cma_res)
 ```
 
