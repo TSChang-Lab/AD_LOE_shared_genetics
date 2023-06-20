@@ -299,12 +299,12 @@ modelI_upper_epi = exp(modelI_ci[6,2])
 ## 3. Mediation
 ```{r}
 cma_res = cmest(data = epi_med, model = 'rb', outcome = 'AD', exposure = 'quintile',
-                 mediator = 'epilepsy', 
-                 basec = c('age_last_visit', 'female', 'record_length', 'enc_per_yr', 'PC1',
+                mediator = 'epilepsy', 
+                basec = c('age_last_visit', 'female', 'record_length', 'enc_per_yr', 'PC1',
                            'PC2', 'PC3', 'PC4', 'htn', 'diabetes', 'hyperlipid'),
-                 EMint = FALSE, mreg = list('logistic'), yreg = 'logistic',
-                 astar = 1, a = 5, mval = list(1), estimation = 'imputation', inference = 'bootstrap',
-                 nboot = 1000, boot.ci.type = 'per')
+                EMint = FALSE, mreg = list('logistic'), yreg = 'logistic',
+                astar = 1, a = 5, mval = list(1), estimation = 'imputation', inference = 'bootstrap',
+                nboot = 1000, boot.ci.type = 'per')
 
 summary(cma_res)
 ```
