@@ -2,7 +2,7 @@
 title: "Supplementary and senstivity analysis"
 author: "Joy_Fu"
 date: "2023-04-10"
-output: html_document
+output: rmarkdown::github_document
 ---
 
 ```{r setup, include=FALSE}
