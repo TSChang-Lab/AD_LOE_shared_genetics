@@ -1,15 +1,9 @@
----
-title: "Supplementary and senstivity analysis"
-author: "Mingzhou Fu"
-date: "2024-08-31"
-output: github_document
----
+Supplementary and senstivity analysis
+================
+Mingzhou Fu
+2024-08-31
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
+``` r
 rm(list = ls())
 pacman::p_load(tidyverse, gtsummary, PheWAS)
 raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
@@ -17,14 +11,30 @@ output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
 ```
 
 # Part 1. Model evaluation
-```{r}
+
+``` r
 model_evaluation = read_csv(file = paste0(raw_data_path, "modeling/model_eval_elnet.csv"))
+```
+
+    ## Rows: 3150 Columns: 9
+    ## ── Column specification ────────────────────────────────────────────────────────
+    ## Delimiter: ","
+    ## chr (2): model, overlap_single
+    ## dbl (7): seed, auc_ad, auprc_ad, mse_ad, auc_loe, auprc_loe, mse_loe
+    ## 
+    ## ℹ Use `spec()` to retrieve the full column specification for this data.
+    ## ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
+
+``` r
 model_evaluation = model_evaluation %>% unique()
 length(unique(model_evaluation$seed)) # 999
 ```
 
+    ## [1] 999
+
 ## 1. AD
-```{r}
+
+``` r
 aucpr_AD = model_evaluation %>%  
   select(model, seed, auprc_ad) %>% drop_na() %>% unique() %>%
   pivot_wider(names_from = model, values_from = auprc_ad)
@@ -35,8 +45,16 @@ wilcox_AD_aucpr = wilcox.test(aucpr_AD$`Multi-Task Elastic Net`,
 wilcox_AD_aucpr
 ```
 
+    ## 
+    ##  Wilcoxon signed rank test with continuity correction
+    ## 
+    ## data:  aucpr_AD$`Multi-Task Elastic Net` and aucpr_AD$`Separate Elastic Net (AD)`
+    ## V = 362171, p-value < 2.2e-16
+    ## alternative hypothesis: true location shift is greater than 0
+
 ## 2. LOE
-```{r}
+
+``` r
 aucpr_LOE = model_evaluation %>%  
   select(model, seed, auprc_loe) %>% drop_na() %>% unique() %>%
   pivot_wider(names_from = model, values_from = auprc_loe)
@@ -46,7 +64,14 @@ wilcox_LOE_aucpr = wilcox.test(aucpr_LOE$`Multi-Task Elastic Net`,
 wilcox_LOE_aucpr
 ```
 
-```{r}
+    ## 
+    ##  Wilcoxon signed rank test with continuity correction
+    ## 
+    ## data:  aucpr_LOE$`Multi-Task Elastic Net` and aucpr_LOE$`Separate Elastic Net (LOE)`
+    ## V = 427220, p-value < 2.2e-16
+    ## alternative hypothesis: true location shift is greater than 0
+
+``` r
 aucpr_AD_sig = aucpr_AD %>% 
   mutate(diff_AD = `Multi-Task Elastic Net` - `Separate Elastic Net (AD)`) %>% 
   filter(diff_AD > 0) %>% select(seed, diff_AD)
@@ -57,58 +82,15 @@ aucpr_sig_final = aucpr_AD_sig %>% inner_join(aucpr_LOE_sig) %>%
   arrange(desc(diff_LOE)) %>% select(seed, diff_AD, diff_LOE)
 ```
 
+    ## Joining with `by = join_by(seed)`
+
 # Part 2. LDSC
-```{bash eval=FALSE, include=FALSE}
-git clone https://github.com/bulik/ldsc.git
-cd ldsc
-conda env create --file environment.yml
-conda activate ldsc
-```
-
-```{bash eval=FALSE, include=FALSE}
-python munge_sumstats.py \
-    --sumstats /Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/sumstats/ldsc/AD_Wightman2021_EUR_hg19.txt \
-    --merge-alleles 1000G_Phase3_baselineLDscore/w_hm3.snplist \
-    --out formatted_AD_sumstats \
-    --a1 A1 --a2 A2 --snp SNP --N-col N --p P 
-    
-# Writing summary statistics for 1217311 SNPs (1040320 with nonmissing beta) to formatted_AD_sumstats.sumstats.gz.
-
-# Metadata:
-# Mean chi^2 = 1.18
-# Lambda GC = 1.098
-# Max chi^2 = 1226.904
-# 405 Genome-wide significant SNPs (some may have been removed by filtering).
-```
-
-```{bash eval=FALSE, include=FALSE}
-python munge_sumstats.py \
-    --sumstats /Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/sumstats/ldsc/GGE_ILAEC2023_EUR_hg19.txt \
-    --merge-alleles 1000G_Phase3_baselineLDscore/w_hm3.snplist \
-    --out formatted_GGE_sumstats \
-    --a1 A1 --a2 A2 --snp SNP --N-col N --p P 
-    
-# Writing summary statistics for 1217311 SNPs (903482 with nonmissing beta) to formatted_GGE_sumstats.sumstats.gz.
-
-# Metadata:
-# Mean chi^2 = 1.35
-# Lambda GC = 1.293
-# Max chi^2 = 78.289
-# 299 Genome-wide significant SNPs (some may have been removed by filtering).
-```
-
-
-```{bash eval=FALSE, include=FALSE}
-python ldsc.py \
-    --rg formatted_AD_sumstats.sumstats.gz,formatted_GGE_sumstats.sumstats.gz \
-    --ref-ld-chr 1000G_Phase3_baselineLDscore/ \
-    --w-ld-chr 1000G_Phase3_baselineLDscore/ \
-    --out gencor_AD_GGE
-```
 
 # Part 3. Supplementary tables
+
 ## 1. Phecodes & ICD-10
-```{r}
+
+``` r
 epi_phecode = c("345", "345.1", "345.11", "345.12", "345.3")
 icd_short = icd.data::icd10cm2016 %>% as.data.frame() %>% 
   mutate(code = as.character(code)) %>% 
@@ -123,7 +105,7 @@ epi_tbl = PheWAS::phecode_map %>%
 #             file = paste0(output_path, "epi_phecode_tbl.txt"), quote = "none")
 ```
 
-```{r}
+``` r
 ad_tbl = PheWAS::phecode_map %>% 
   filter(vocabulary_id == "ICD10CM" & phecode == "290.11") %>% 
   mutate(code_nodigit = str_replace(code, "\\.", "")) %>% 
@@ -135,18 +117,24 @@ ad_tbl = PheWAS::phecode_map %>%
 ```
 
 ## 2. SNP coefficients figure
-```{r}
+
+``` r
 load(file = paste0(raw_data_path, "modeling/common_feature_coef.rda"))
 shared_SNP_coef = common_feature_coef %>% filter(signs == "Same") %>%
   mutate(mean_coef = (mean_AD_coef + mean_LOE_coef) / 2) %>%
   select(SNP, mean_coef) %>% unique()
 dim(shared_SNP_coef) # dim = (27,2)
+```
+
+    ## [1] 27  2
+
+``` r
 # output to table
 # write_delim(shared_SNP_coef, delim = "\t", 
 #             file = paste0(output_path, "shared_SNP_coef.txt"), quote = "none")
 ```
 
-```{r}
+``` r
 # plot figure
 shared_SNP_coef_plt = common_feature_coef %>% filter(signs == "Same") %>% 
   mutate(chr = as.numeric(substr(str_extract(SNP, "chr[0-9]+"), 4, 1000000L)),
@@ -170,5 +158,14 @@ ggplot(shared_SNP_coef_plt_add, aes(x = SNP, y = Coefficient, fill = Coefficient
   theme(legend.position = "none",
         axis.title.x = element_blank(),
         axis.title.y = element_blank())
+```
+
+    ## Coordinate system already present. Adding new coordinate system, which will
+    ## replace the existing one.
+
+``` r
 dev.off()
 ```
+
+    ## quartz_off_screen 
+    ##                 2
