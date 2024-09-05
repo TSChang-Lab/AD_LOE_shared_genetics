@@ -1,15 +1,9 @@
----
-title: "Interpretations"
-author: "Joy_Fu"
-date: "2024-08-19"
-output: html_document
----
+Interpretations
+================
+Mingzhou Fu
+2024-08-19
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
+``` r
 rm(list = ls())
 pacman::p_load(tidyverse, h2o, tidymodels, survival)
 raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
@@ -18,8 +12,10 @@ output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
 ```
 
 # Part 1. Shared features
+
 ## 1. Candidate SNPs
-```{r}
+
+``` r
 load(file = paste0(raw_data_path, "FUMA_outputs/overlap_fuma.rda"))
 # load in csv file (there are some replication in the seed)
 shared_features = read_csv(file = paste0(raw_data_path, "modeling/shared_features_elnet.csv"))
@@ -31,7 +27,7 @@ rsID = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/snps.tx
   select(uniqID, rsID) %>% unique()
 ```
 
-```{r}
+``` r
 shared_features %>% group_by(seed) %>% summarise(n = n()) %>% summary()
 # median = 22, mean = 21.84
 common_feature = shared_features %>% group_by(SNP) %>%
@@ -59,7 +55,8 @@ write.table(common_feature_final,
 ```
 
 ## 2. Map to genes
-```{r}
+
+``` r
 AD_genes = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/genes.txt"), 
                       header = T, sep = "\t", fill = T)
 pos_AD = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
@@ -85,7 +82,7 @@ LOE_CI = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/ci.txt")
                     header = T, sep = "\t", fill = T) %>% select(SNPs, genes) %>% unique()
 ```
 
-```{r}
+``` r
 AD_SNPs_df = common_feature_final %>% filter(phenotype == "AD_EUR") %>%
   select(rsID, signs) %>% unique() %>% left_join(overlap_fuma) %>% 
   select(rsID, IndSigSNP, signs, posMapFilt, eqtlMapFilt, ciMapFilt) %>% 
@@ -99,7 +96,8 @@ dim(LOE_SNPs_df) # dim = (14, 7)
 ```
 
 ### 1) Same direction set
-```{r}
+
+``` r
 AD_SNPs_direct = AD_SNPs_df %>% filter(signs == "Same") %>%
   filter(direct == 1) %>% pull(rsID) %>% unique() 
 length(AD_SNPs_direct) # 8
@@ -124,7 +122,7 @@ AD_genes_mapped = rbind(AD_genes_direct_mapped, AD_genes_indirect_mapped) %>%
 dim(AD_genes_mapped) # dim = (34,12)
 ```
 
-```{r}
+``` r
 LOE_SNPs_direct = LOE_SNPs_df %>% filter(signs == "Same") %>%
   filter(direct == 1) %>% pull(rsID) %>% unique() 
 length(LOE_SNPs_direct) # 0
@@ -143,7 +141,7 @@ LOE_genes_mapped = LOE_genes_indirect_mapped %>% mutate(phenotype = "LOE")
 dim(LOE_genes_mapped) # dim = (2,12)
 ```
 
-```{r}
+``` r
 all_genes_mapped_same = rbind(AD_genes_mapped, LOE_genes_mapped) %>% unique()
 dim(all_genes_mapped_same) # dim = (36,12)
 # output
@@ -153,7 +151,8 @@ write.table(all_genes_mapped_same,
 ```
 
 ### 2) Opposite direction set
-```{r}
+
+``` r
 AD_SNPs_direct = AD_SNPs_df %>% filter(signs == "Different") %>%
   filter(direct == 1) %>% pull(rsID) %>% unique() 
 length(AD_SNPs_direct) # 9
@@ -191,11 +190,10 @@ AD_genes_mapped = rbind(AD_genes_direct_mapped, AD_genes_indirect_mapped) %>%
 dim(AD_genes_mapped) # dim = (101,12)
 ```
 
-```{r}
+``` r
 LOE_SNPs_direct = LOE_SNPs_df %>% filter(signs == "Different") %>%
   filter(direct == 1) %>% pull(rsID) %>% unique() 
 length(LOE_SNPs_direct) # 0
-
 LOE_SNP_indirect = LOE_SNPs_df %>% filter(signs == "Different") %>% filter(direct == 0) 
 # positional
 LOE_indirect_pos = LOE_SNP_indirect %>% filter(posMapFilt == 1) %>%
@@ -215,7 +213,7 @@ dim(LOE_genes_indirect_mapped) # dim = (3,11)
 # no mapped genes found for LOE
 ```
 
-```{r}
+``` r
 all_genes_mapped_diff = rbind(AD_genes_mapped, LOE_genes_mapped) %>% unique()
 dim(all_genes_mapped_diff) # dim = (103,12)
 # output
@@ -225,7 +223,8 @@ write.table(all_genes_mapped_diff,
 ```
 
 # Part 2. Genetic association tests
-```{r}
+
+``` r
 phe_table_extract_date = "2024-08-13"
 # Load in datasets
 load(file = paste0(raw_data_path, "atlas/pheno/final/sample_demo_eligible_", phe_table_extract_date, ".rda"))
@@ -233,15 +232,18 @@ load(file = paste0(raw_data_path, "atlas/pheno/final/sample_enc_eligible_", phe_
 ```
 
 ## 1. Shared genetic risk score
-```{r}
+
+``` r
 load(file = paste0(raw_data_path, "modeling/sample_data_full.rda"))
 load(file = paste0(raw_data_path, "modeling/genotype_df_filter.rda"))
 load(file = paste0(raw_data_path, "modeling/common_feature_coef.rda"))
 ```
 
 ### 1) Retrain weights for shared SNPs
+
 See details `4_MultitaskElasticNet.ipynb`.
-```{r}
+
+``` r
 # read in csv
 shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/shared_coef_retrain.csv"))
 names(shared_SNP_coef) = c("SNP", "new_coef")
@@ -251,7 +253,8 @@ dim(shared_genotype) # dim = (34463, 28)
 ```
 
 ### 2) Calculate shared-PRS
-```{r}
+
+``` r
 # Filter genotype info
 genotype.targ = shared_genotype %>% select(all_of(shared_SNP_coef$SNP))
 genotype.targ.matrix = as.matrix(genotype.targ[])
@@ -268,7 +271,7 @@ dim(pred_prs_final) # dim = (34463, 3)
 save(pred_prs_final, file = paste0(raw_data_path, "modeling/AD_LOE_shared_PRS.rda"))
 ```
 
-```{r}
+``` r
 # Join sample demo
 patient_genetic = sample_demo_eligible %>% 
   left_join(pred_prs_final) %>% select(-AD_LOE_shared_PRS)
@@ -276,8 +279,10 @@ dim(patient_genetic) # dim = (2179, 28)
 ```
 
 ## 2. Test for associations
-### 1) AD | LOE ~ AD_LOE_shared_PRS
-```{r}
+
+### 1) AD \| LOE ~ AD_LOE_shared_PRS
+
+``` r
 # build models
 glm_AD = linear_reg() %>% 
   set_engine("glm") %>% 
@@ -301,48 +306,44 @@ sum_res = rbind(tidy(glm_AD, conf.int = TRUE, exponentiate = TRUE)[2,],
   select(OR, p_value)
 sum_res
 ```
-```{r}
+
+``` r
 # Fit the full logistic regression model
 full_model = glm(AD ~ AD_LOE_shared_PRS_normalized + female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Fit the reduced model excluding the variable of interest (e.g., x2)
 reduced_model = glm(AD ~ female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Calculate the deviance for both models
 deviance_full = deviance(full_model)
 deviance_reduced = deviance(reduced_model)
-
 # Calculate the percentage of variation explained by the variable x2
 percent_variation_explained = 100 * (deviance_reduced - deviance_full) / deviance_reduced
 percent_variation_explained
 ```
 
-```{r}
+``` r
 # Fit the full logistic regression model
 full_model = glm(LOE ~ AD_LOE_shared_PRS_normalized + female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Fit the reduced model excluding the variable of interest (e.g., x2)
 reduced_model = glm(LOE ~ female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Calculate the deviance for both models
 deviance_full = deviance(full_model)
 deviance_reduced = deviance(reduced_model)
-
 # Calculate the percentage of variation explained by the variable x2
 percent_variation_explained = 100 * (deviance_reduced - deviance_full) / deviance_reduced
 percent_variation_explained
 ```
 
-### 2) AD | LOE ~ e4count (comparison)
-```{r}
+### 2) AD \| LOE ~ e4count (comparison)
+
+``` r
 glm_AD = linear_reg() %>% 
   set_engine("glm") %>% 
   set_mode("regression") %>% 
@@ -365,43 +366,37 @@ sum_res = rbind(tidy(glm_AD, conf.int = TRUE, exponentiate = TRUE)[2,],
   select(OR, p_value)
 sum_res
 ```
-```{r}
+
+``` r
 # Fit the full logistic regression model
 full_model = glm(AD ~ e4count + female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Fit the reduced model excluding the variable of interest (e.g., x2)
 reduced_model = glm(AD ~ female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Calculate the deviance for both models
 deviance_full = deviance(full_model)
 deviance_reduced = deviance(reduced_model)
-
 # Calculate the percentage of variation explained by the variable x2
 percent_variation_explained = 100 * (deviance_reduced - deviance_full) / deviance_reduced
 percent_variation_explained
 ```
 
-```{r}
+``` r
 # Fit the full logistic regression model
 full_model = glm(LOE ~ e4count + female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Fit the reduced model excluding the variable of interest (e.g., x2)
 reduced_model = glm(LOE ~ female + 
         PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
         data = patient_genetic, family = binomial)
-
 # Calculate the deviance for both models
 deviance_full = deviance(full_model)
 deviance_reduced = deviance(reduced_model)
-
 # Calculate the percentage of variation explained by the variable x2
 percent_variation_explained = 100 * (deviance_reduced - deviance_full) / deviance_reduced
 percent_variation_explained
 ```
-

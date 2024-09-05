@@ -1,15 +1,9 @@
----
-title: "Association tests between AD and LOE"
-author: "Joy_Fu"
-date: "2024-08-29"
-output: html_document
----
+Association tests between AD and LOE
+================
+Mingzhou Fu
+2024-08-29
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
+``` r
 rm(list = ls())
 pacman::p_load(tidyverse, tidymodels, gtsummary, cmprsk)
 raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
@@ -23,8 +17,10 @@ load(file = paste0(raw_data_path, "atlas/pheno/mod/atlas_death_info_",
 ```
 
 # Part 1. Sample preparation
+
 ## 1. Add covariates
-```{r}
+
+``` r
 # HTN
 htn_case_info = sample_enc_eligible %>% 
   filter(phecode %in% c("401.1")) %>% group_by(UniqueSampleId) %>% 
@@ -52,7 +48,8 @@ dim(hyperlipid_case_info) # dim = (7170,4)
 ```
 
 ## 2. Finalize association sample
-```{r}
+
+``` r
 patient_final = sample_demo_eligible %>% 
   left_join(htn_case_info) %>% left_join(diab_case_info) %>% 
   left_join(stroke_case_info) %>% left_join(hyperlipid_case_info) %>% 
@@ -67,7 +64,8 @@ save(patient_final, file = paste0(raw_data_path, "modeling/patient_final.rda"))
 ```
 
 # Part 2. Descriptive statistics
-```{r}
+
+``` r
 # Desc by epilepsy status
 patient_final %>% mutate(LOE = as.factor(LOE)) %>% 
   select(LOE, AD, age_last_visit, female, record_length, record_density, 
@@ -75,7 +73,7 @@ patient_final %>% mutate(LOE = as.factor(LOE)) %>%
   tbl_summary(by = LOE) %>% add_p()
 ```
 
-```{r}
+``` r
 # Desc by AD status
 patient_final %>% mutate(AD = as.factor(AD)) %>% 
   select(AD, LOE, age_last_visit, female, record_length, record_density, 
@@ -83,61 +81,13 @@ patient_final %>% mutate(AD = as.factor(AD)) %>%
   tbl_summary(by = AD) %>% add_p()
 ```
 
-# Part 3. Cross-sectional modeling (logistic regression)
-## 1. AD ~ LOE
-```{r}
-glm_demo = linear_reg() %>% 
-  set_engine("glm") %>% 
-  set_mode("regression") %>% 
-  fit(AD ~ LOE + female + age_last_visit + record_length + record_density +
-        PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
-      data = patient_final)
-glm_health = linear_reg() %>% 
-  set_engine("glm") %>% 
-  set_mode("regression") %>% 
-  fit(AD ~ LOE + female + age_last_visit + record_length + record_density +
-        PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + 
-        HTN + diabetes + stroke, data = patient_final)
-# extract results
-sum_res = rbind(tidy(glm_demo, conf.int = TRUE, exponentiate = TRUE)[2,],
-                tidy(glm_health, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
-  select(estimate, conf.low, conf.high, p.value) %>% 
-  mutate(across(c(estimate, conf.low, conf.high), ~round(., 3))) %>% 
-  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
-  mutate(p_value = round(p.value, 3)) %>% 
-  select(OR, p_value)
-sum_res
-```
+# Part 3. Survival modeling
 
-## 2. LOE ~ AD
-```{r}
-glm_demo = linear_reg() %>% 
-  set_engine("glm") %>% 
-  set_mode("regression") %>% 
-  fit(LOE ~ AD + female + age_last_visit + record_length + record_density +
-        PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
-      data = patient_final)
-glm_health = linear_reg() %>% 
-  set_engine("glm") %>% 
-  set_mode("regression") %>% 
-  fit(LOE ~ AD + female + age_last_visit + record_length + record_density +
-        PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10 + 
-        HTN + diabetes + stroke, data = patient_final)
-# extract results
-sum_res = rbind(tidy(glm_demo, conf.int = TRUE, exponentiate = TRUE)[2,],
-                tidy(glm_health, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
-  select(estimate, conf.low, conf.high, p.value) %>% 
-  mutate(across(c(estimate, conf.low, conf.high), ~round(., 3))) %>% 
-  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
-  mutate(p_value = round(p.value, 3)) %>% 
-  select(OR, p_value)
-sum_res
-```
-
-# Part 4. Survival modeling 
 ## 1. AD ~ LOE
+
 ### Cox proportional-Hazards
-```{r}
+
+``` r
 patient_AD_longitudinal = patient_final %>% 
   mutate(LOE_status = case_when(
     LOE == 1 & (EpilepsyDate <= ADDate | is.na(ADDate)) ~ 1,
@@ -182,7 +132,7 @@ patient_AD_longitudinal = patient_final %>%
 dim(patient_AD_longitudinal) # dim = (12854,24)
 ```
 
-```{r}
+``` r
 cox_demo = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age + 
                     female + record_length + record_density + PC1 + PC2 + PC3 + 
                     PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
@@ -204,7 +154,8 @@ sum_res
 ```
 
 ### FG modeling
-```{r}
+
+``` r
 patient_AD_longitudinal = patient_final %>% 
   mutate(LOE_status = case_when(
     LOE == 1 & (EpilepsyDate <= ADDate | is.na(ADDate)) ~ 1,
@@ -250,7 +201,7 @@ patient_AD_longitudinal = patient_final %>%
 dim(patient_AD_longitudinal) # dim = (12854,24)
 ```
 
-```{r}
+``` r
 cov_demo = model.matrix(~ LOE_status + baseline_age + female + record_length + 
                           record_density + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + 
                           PC7 + PC8 + PC9 + PC10, 
@@ -279,8 +230,10 @@ sum_res
 ```
 
 ## 2. LOE ~ AD
+
 ### Cox proportional-Hazards
-```{r}
+
+``` r
 patient_LOE_longitudinal = patient_final %>% 
   mutate(AD_status = case_when(
     AD == 1 & (ADDate <= EpilepsyDate | is.na(EpilepsyDate)) ~ 1,
@@ -325,7 +278,7 @@ patient_LOE_longitudinal = patient_final %>%
 dim(patient_LOE_longitudinal) # dim = (12852,25)
 ```
 
-```{r}
+``` r
 cox_demo = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age + 
                     female + record_length + record_density + PC1 + PC2 + PC3 + 
                     PC4 + PC5 + PC6 + PC7 + PC8 + PC9 + PC10, 
@@ -347,7 +300,8 @@ sum_res
 ```
 
 ### FG modeling
-```{r}
+
+``` r
 patient_LOE_longitudinal = patient_final %>% 
   mutate(AD_status = case_when(
     AD == 1 & (ADDate <= EpilepsyDate | is.na(EpilepsyDate)) ~ 1,
@@ -393,7 +347,7 @@ patient_LOE_longitudinal = patient_final %>%
 dim(patient_LOE_longitudinal) # dim = (12852,25)
 ```
 
-```{r}
+``` r
 cov_demo = model.matrix(~ AD_status + baseline_age + female + record_length + 
                            record_density + PC1 + PC2 + PC3 + PC4 + PC5 + PC6 + 
                            PC7 + PC8 + PC9 + PC10, 
@@ -420,4 +374,3 @@ sum_res = rbind(tidy(crr_demo, conf.int = TRUE, exponentiate = TRUE)[1,],
   select(RR, p_value)
 sum_res
 ```
-

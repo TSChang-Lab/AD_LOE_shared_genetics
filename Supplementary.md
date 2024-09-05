@@ -14,23 +14,9 @@ output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
 
 ``` r
 model_evaluation = read_csv(file = paste0(raw_data_path, "modeling/model_eval_elnet.csv"))
-```
-
-    ## Rows: 3150 Columns: 9
-    ## ── Column specification ────────────────────────────────────────────────────────
-    ## Delimiter: ","
-    ## chr (2): model, overlap_single
-    ## dbl (7): seed, auc_ad, auprc_ad, mse_ad, auc_loe, auprc_loe, mse_loe
-    ## 
-    ## ℹ Use `spec()` to retrieve the full column specification for this data.
-    ## ℹ Specify the column types or set `show_col_types = FALSE` to quiet this message.
-
-``` r
 model_evaluation = model_evaluation %>% unique()
 length(unique(model_evaluation$seed)) # 999
 ```
-
-    ## [1] 999
 
 ## 1. AD
 
@@ -45,13 +31,6 @@ wilcox_AD_aucpr = wilcox.test(aucpr_AD$`Multi-Task Elastic Net`,
 wilcox_AD_aucpr
 ```
 
-    ## 
-    ##  Wilcoxon signed rank test with continuity correction
-    ## 
-    ## data:  aucpr_AD$`Multi-Task Elastic Net` and aucpr_AD$`Separate Elastic Net (AD)`
-    ## V = 362171, p-value < 2.2e-16
-    ## alternative hypothesis: true location shift is greater than 0
-
 ## 2. LOE
 
 ``` r
@@ -64,13 +43,6 @@ wilcox_LOE_aucpr = wilcox.test(aucpr_LOE$`Multi-Task Elastic Net`,
 wilcox_LOE_aucpr
 ```
 
-    ## 
-    ##  Wilcoxon signed rank test with continuity correction
-    ## 
-    ## data:  aucpr_LOE$`Multi-Task Elastic Net` and aucpr_LOE$`Separate Elastic Net (LOE)`
-    ## V = 427220, p-value < 2.2e-16
-    ## alternative hypothesis: true location shift is greater than 0
-
 ``` r
 aucpr_AD_sig = aucpr_AD %>% 
   mutate(diff_AD = `Multi-Task Elastic Net` - `Separate Elastic Net (AD)`) %>% 
@@ -82,9 +54,54 @@ aucpr_sig_final = aucpr_AD_sig %>% inner_join(aucpr_LOE_sig) %>%
   arrange(desc(diff_LOE)) %>% select(seed, diff_AD, diff_LOE)
 ```
 
-    ## Joining with `by = join_by(seed)`
-
 # Part 2. LDSC
+
+``` bash
+git clone https://github.com/bulik/ldsc.git
+cd ldsc
+conda env create --file environment.yml
+conda activate ldsc
+```
+
+``` bash
+python munge_sumstats.py \
+    --sumstats /Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/sumstats/ldsc/AD_Wightman2021_EUR_hg19.txt \
+    --merge-alleles 1000G_Phase3_baselineLDscore/w_hm3.snplist \
+    --out formatted_AD_sumstats \
+    --a1 A1 --a2 A2 --snp SNP --N-col N --p P 
+    
+# Writing summary statistics for 1217311 SNPs (1040320 with nonmissing beta) to formatted_AD_sumstats.sumstats.gz.
+
+# Metadata:
+# Mean chi^2 = 1.18
+# Lambda GC = 1.098
+# Max chi^2 = 1226.904
+# 405 Genome-wide significant SNPs (some may have been removed by filtering).
+```
+
+``` bash
+python munge_sumstats.py \
+    --sumstats /Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/sumstats/ldsc/GGE_ILAEC2023_EUR_hg19.txt \
+    --merge-alleles 1000G_Phase3_baselineLDscore/w_hm3.snplist \
+    --out formatted_GGE_sumstats \
+    --a1 A1 --a2 A2 --snp SNP --N-col N --p P 
+    
+# Writing summary statistics for 1217311 SNPs (903482 with nonmissing beta) to formatted_GGE_sumstats.sumstats.gz.
+
+# Metadata:
+# Mean chi^2 = 1.35
+# Lambda GC = 1.293
+# Max chi^2 = 78.289
+# 299 Genome-wide significant SNPs (some may have been removed by filtering).
+```
+
+``` bash
+python ldsc.py \
+    --rg formatted_AD_sumstats.sumstats.gz,formatted_GGE_sumstats.sumstats.gz \
+    --ref-ld-chr 1000G_Phase3_baselineLDscore/ \
+    --w-ld-chr 1000G_Phase3_baselineLDscore/ \
+    --out gencor_AD_GGE
+```
 
 # Part 3. Supplementary tables
 
@@ -101,8 +118,8 @@ epi_tbl = PheWAS::phecode_map %>%
   left_join(icd_short, by = "code_nodigit") %>% 
   select(phecode, code, long_desc) %>% unique() %>% drop_na() %>% 
   mutate(long_desc = gsub("<0xa0>", " ", long_desc))
-# write_delim(epi_tbl, delim = "\t", 
-#             file = paste0(output_path, "epi_phecode_tbl.txt"), quote = "none")
+write_delim(epi_tbl, delim = "\t",
+            file = paste0(output_path, "epi_phecode_tbl.txt"), quote = "none")
 ```
 
 ``` r
@@ -112,8 +129,8 @@ ad_tbl = PheWAS::phecode_map %>%
   left_join(icd_short, by = "code_nodigit") %>% 
   select(phecode, code, long_desc) %>% unique() %>% drop_na() %>% 
   mutate(long_desc = gsub("<0xa0>", " ", long_desc))
-# write_delim(ad_tbl, delim = "\t", 
-#             file = paste0(output_path, "ad_phecode_tbl.txt"), quote = "none")
+write_delim(ad_tbl, delim = "\t",
+            file = paste0(output_path, "ad_phecode_tbl.txt"), quote = "none")
 ```
 
 ## 2. SNP coefficients figure
@@ -124,14 +141,9 @@ shared_SNP_coef = common_feature_coef %>% filter(signs == "Same") %>%
   mutate(mean_coef = (mean_AD_coef + mean_LOE_coef) / 2) %>%
   select(SNP, mean_coef) %>% unique()
 dim(shared_SNP_coef) # dim = (27,2)
-```
-
-    ## [1] 27  2
-
-``` r
 # output to table
-# write_delim(shared_SNP_coef, delim = "\t", 
-#             file = paste0(output_path, "shared_SNP_coef.txt"), quote = "none")
+write_delim(shared_SNP_coef, delim = "\t",
+            file = paste0(output_path, "shared_SNP_coef.txt"), quote = "none")
 ```
 
 ``` r
@@ -145,9 +157,6 @@ shared_SNP_coef_plt = common_feature_coef %>% filter(signs == "Same") %>%
                values_to = "Coefficient")
 shared_SNP_coef_plt_add = shared_SNP_coef_plt %>% 
   mutate(SNP = factor(SNP, levels = unique(SNP)))
-  # mutate(chr_numeric = as.numeric(gsub("chr([0-9]+):.*", "\\1", SNP)),
-  #        pos_numeric = as.numeric(str_extract(SNP, "(?<=:)[0-9]+(?=:)"))) %>% 
-  # mutate(SNP = factor(SNP, levels = unique(SNP)[order(chr_numeric, pos_numeric)]))
 
 pdf(paste0(output_path, "shared_coef_plot.pdf"), width = 8, height = 6)
 ggplot(shared_SNP_coef_plt_add, aes(x = SNP, y = Coefficient, fill = Coefficient > 0)) + 
@@ -158,14 +167,5 @@ ggplot(shared_SNP_coef_plt_add, aes(x = SNP, y = Coefficient, fill = Coefficient
   theme(legend.position = "none",
         axis.title.x = element_blank(),
         axis.title.y = element_blank())
-```
-
-    ## Coordinate system already present. Adding new coordinate system, which will
-    ## replace the existing one.
-
-``` r
 dev.off()
 ```
-
-    ## quartz_off_screen 
-    ##                 2

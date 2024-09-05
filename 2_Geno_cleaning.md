@@ -1,15 +1,9 @@
----
-title: "Genotype data cleaning"
-author: "Joy_Fu"
-date: "2024-08-13"
-output: html_document
----
+Genotype data cleaning
+================
+Mingzhou Fu
+2024-08-13
 
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
-
-```{r}
+``` r
 rm(list = ls())
 pacman::p_load(tidyverse, GenomicRanges, rtracklayer, bigsnpr, bigreadr, 
                data.table, ieugwasr, R.utils)
@@ -19,9 +13,12 @@ output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
 ```
 
 # Part 0. GWAS preprocessing
+
 Preprocessing of GWAS summary statistics, ran once
+
 ## 1. AD EUR
-```{r}
+
+``` r
 sumstats_file = paste0(raw_data_path, 
                        "sumstats/raw/Wightman2021_AD_EUR.txt.gz")
 sumstats = fread(sumstats_file)
@@ -29,11 +26,13 @@ names(sumstats) = c("chr", "pos", "a1", "a0", "z", "p", "N")
 sumstats_clean = sumstats %>% filter(!is.na(chr) & !is.na(pos)) %>% 
   mutate(p = as.numeric(p))
 dim(sumstats_clean) # dim = (12688339,7)
-write.table(sumstats_clean, file = paste0(raw_data_path, 'sumstats/fuma_upload/AD_Wightman2021_EUR_hg19.txt'),
+write.table(sumstats_clean, 
+            file = paste0(raw_data_path, 
+                          'sumstats/fuma_upload/AD_Wightman2021_EUR_hg19.txt'),
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-```{r}
+``` r
 AD_sumstats_clean = sumstats_clean
 # read in reference file
 ref_file = paste0(raw_data_path, 'sumstats/raw/hm3_151_match.txt')
@@ -41,23 +40,23 @@ hm3_ref = fread(ref_file)
 names(hm3_ref) = c("CHR", "BP", "SNP")
 hm3_ref = hm3_ref %>% 
   mutate(chr = as.numeric(substring(CHR, 4, nchar(CHR)))) %>% 
-  dplyr::rename("pos" = "BP") %>%
-  select(chr, pos, SNP) %>% unique()
+  dplyr::rename("pos" = "BP") %>% select(chr, pos, SNP) %>% unique()
 dim(hm3_ref) # dim = (1473450,3)
 # prepare for ldsc
 sumstats_ldsc = AD_sumstats_clean %>% 
   left_join(hm3_ref, by = c("chr" = "chr", "pos" = "pos")) %>%
-  filter(!is.na(SNP)) %>%
-  select(SNP, N, z, a1, a0, p) %>% unique()
+  filter(!is.na(SNP)) %>% select(SNP, N, z, a1, a0, p) %>% unique()
 names(sumstats_ldsc) = c("SNP", "N", "Z", "A1", "A2", "P")
 dim(sumstats_ldsc) # dim = (1236234,6)
-write.table(sumstats_ldsc, file = paste0(raw_data_path, 'sumstats/ldsc/AD_Wightman2021_EUR_hg19.txt'),
+write.table(sumstats_ldsc, 
+            file = paste0(raw_data_path, 
+                          'sumstats/ldsc/AD_Wightman2021_EUR_hg19.txt'),
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-
 ## 2. ILAEC EUR (European descent (92%))
-```{r}
+
+``` r
 sumstats_file = paste0(raw_data_path, 
                        "sumstats/raw/ILAEC2023_GGE_EUR.tsv.gz")
 sumstats = fread(sumstats_file)
@@ -65,11 +64,13 @@ names(sumstats) = c("chr", "pos", "a1", "a0", "beta", "se", "eaf", "p", "rsid")
 sumstats_clean = sumstats %>% filter(!is.na(chr) & !is.na(pos)) %>% 
   mutate(p = as.numeric(p), a1 = toupper(a1), a0 = toupper(a0))
 dim(sumstats_clean) # dim = (4860774,9)
-write.table(sumstats_clean, file = paste0(raw_data_path, 'sumstats/fuma_upload/GGE_ILAEC2023_EUR_hg19.txt'),
+write.table(sumstats_clean, 
+            file = paste0(raw_data_path, 
+                          'sumstats/fuma_upload/GGE_ILAEC2023_EUR_hg19.txt'),
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-```{r}
+``` r
 LOE_sumstats_clean = sumstats_clean
 sumstats_ldsc = LOE_sumstats_clean %>% 
   mutate(N = 49843) %>% 
@@ -77,45 +78,57 @@ sumstats_ldsc = LOE_sumstats_clean %>%
   select(rsid, N, z, a1, a0, p) %>% unique()
 names(sumstats_ldsc) = c("SNP", "N", "Z", "A1", "A2", "P")
 dim(sumstats_ldsc) # dim = (4860774,6)
-write.table(sumstats_ldsc, file = paste0(raw_data_path, 'sumstats/ldsc/GGE_ILAEC2023_EUR_hg19.txt'),
+write.table(sumstats_ldsc, 
+            file = paste0(raw_data_path, 
+                          'sumstats/ldsc/GGE_ILAEC2023_EUR_hg19.txt'),
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-
 # Part 1. FUMA GWAS results
+
 ## 1. Clean FUMA results
+
 ### 1) AD Kunkle EUR
-```{r}
+
+``` r
 # Full list of independent significant SNPs + LD SNPs (candidate SNPs, catch as many SNPs as we can from ATLAS)
-full_AD_EUR = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
+full_AD_EUR = read.table(file = paste0(raw_data_path, 
+                                       "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
                          header = T, sep = "\t", fill = T)
-lead_AD_EUR = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/leadsnps.txt"), 
+lead_AD_EUR = read.table(file = paste0(raw_data_path, 
+                                       "FUMA_outputs/FUMA_AD_EUR/leadsnps.txt"), 
                          header = T, sep = "\t", fill = T)
 candi_AD_EUR = full_AD_EUR %>% filter(!is.na(gwasP)) %>% 
   mutate(lead = if_else(rsID %in% lead_AD_EUR$rsID, 1, 0)) %>% 
   mutate(phenotype = "AD_EUR") %>% 
   select(chr, pos, rsID, non_effect_allele, effect_allele, gwasP, IndSigSNP, 
-         nearestGene, func, CADD, posMapFilt, eqtlMapFilt, ciMapFilt, lead, phenotype) %>% unique()
+         nearestGene, func, CADD, posMapFilt, eqtlMapFilt, ciMapFilt, lead, 
+         phenotype) %>% unique()
 dim(candi_AD_EUR) # dim = (4154,15)
 ```
 
 ### 2) ILAEC EUR (European descent (92%))
-```{r}
+
+``` r
 # Full list of independent significant SNPs + LD SNPs (candidate SNPs, catch as many SNPs as we can from ATLAS)
-full_Epilepsy_EUR = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/snps.txt"), 
+full_Epilepsy_EUR = read.table(file = paste0(raw_data_path, 
+                                             "FUMA_outputs/FUMA_GGE/snps.txt"), 
                          header = T, sep = "\t", fill = T)
-lead_Epilepsy_EUR = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/leadsnps.txt"), 
+lead_Epilepsy_EUR = read.table(file = paste0(raw_data_path, 
+                                             "FUMA_outputs/FUMA_GGE/leadsnps.txt"), 
                          header = T, sep = "\t", fill = T)
 candi_Epilepsy_EUR = full_Epilepsy_EUR %>% filter(!is.na(gwasP)) %>% 
   mutate(lead = if_else(rsID %in% lead_Epilepsy_EUR$rsID, 1, 0)) %>% 
   mutate(phenotype = "Epilepsy") %>% 
   select(chr, pos, rsID, non_effect_allele, effect_allele, gwasP, IndSigSNP, 
-         nearestGene, func, CADD, posMapFilt, eqtlMapFilt, ciMapFilt, lead, phenotype) %>% unique()
+         nearestGene, func, CADD, posMapFilt, eqtlMapFilt, ciMapFilt, lead, 
+         phenotype) %>% unique()
 dim(candi_Epilepsy_EUR) # dim = (2104,15)
 ```
 
 ## 2. Liftover + annotation
-```{r}
+
+``` r
 candi_full = rbind(candi_AD_EUR, candi_Epilepsy_EUR) %>% as.data.frame() %>% 
   mutate(index = seq(1, nrow(.)))
 # liftover
@@ -138,8 +151,9 @@ liftover_full = candi_full %>%
 dim(liftover_full) # dim = 6240,15
 ```
 
-## 3. Extract and clean ATLAS data -- Server step
-```{r}
+## 3. Extract and clean ATLAS data – Server step
+
+``` r
 # Check overlap with FUMA
 liftover_1 = liftover_full %>% dplyr::rename("chr_num" = "chr") %>% 
   mutate(chr_pos_name1 = paste0("chr", chr_num, ":", pos, ":", a0, ":", a1)) %>% 
@@ -154,15 +168,15 @@ extract_fuma = overlap_fuma %>% pull(chr_pos_name) %>% unique()
 length(extract_fuma) # length = 12480
 save(overlap_fuma, file = paste0(raw_data_path, "FUMA_outputs/overlap_fuma.rda"))
 # Write output for snp extraction on server
-write.table(extract_fuma, 
+write.table(extract_fuma,
             file = paste0(raw_data_path, "FUMA_outputs/extract_fuma.txt"),
             sep = "\t", quote = F, row.names = F, col.names = F)
 ```
 
-```{r}
+``` r
 # Read in the QCed genotype and sumstats files + preprocess the bed file (only need to do once for each data set)
 geno_file = paste0(raw_data_path, 'atlas/geno/fuma.raw')
-# snp_readBed(paste0(geno_file, '.bed'))
+snp_readBed(paste0(geno_file, '.bed'))
 obj.bigSNP = snp_attach(paste0(geno_file, '.rds'))
 # extract the SNP information from the genotype
 map = obj.bigSNP$map[-3]
@@ -176,15 +190,12 @@ fam.order = as.data.table(obj.bigSNP$fam)
 genotype = obj.bigSNP$genotypes
 genotype_df = as.matrix(genotype[])[,] %>% as.data.frame()
 colnames(genotype_df) = map$rsid
-# check missing patterns
-# gg_miss_upset(genotype_df)
 ```
 
-```{r}
+``` r
 # The above SNPs have a missing, we decide to exclude those SNPs (N = 1)
 missing_info = genotype_df %>% 
-  summarise_all(function(x) sum(is.na(x))) %>%  
-  gather(variable, missing_count) 
+  summarise_all(function(x) sum(is.na(x))) %>% gather(variable, missing_count) 
 columns_with_missing = missing_info %>% 
   filter(missing_count > 0) %>% pull(variable)
 length(columns_with_missing) # 194
@@ -198,12 +209,15 @@ dim(genotype_df_fam) # 34463,5641
 map_noNA = map %>% filter(rsid %!in% columns_with_missing)
 dim(map_noNA) # 5639,5
 save(map_noNA, file = paste0(raw_data_path, "modeling/map_noNA_full_SNP.rda"))
-save(genotype_df_fam, file = paste0(raw_data_path, "modeling/freeze60k_geno_freq_full_SNP.rda"))
+save(genotype_df_fam, file = paste0(raw_data_path, 
+                                    "modeling/freeze60k_geno_freq_full_SNP.rda"))
 ```
 
 # Part 2. Prioritization of SNPs
+
 ## 1. Select mapped SNPs
-```{r}
+
+``` r
 candidate_snp_info = overlap_fuma %>% 
   select(chr_num, pos, rsID, gwasP, IndSigSNP, func, CADD, lead, phenotype, 
          nearestGene, posMapFilt, eqtlMapFilt, ciMapFilt) %>%
@@ -221,14 +235,15 @@ save(genotype_df_filter, file = paste0(raw_data_path, "modeling/genotype_df_filt
 ```
 
 ## 2. Finalize modeling dataframe
-```{r}
+
+``` r
 phe_table_extract_date = "2024-08-13"
 load(file = paste0(raw_data_path, "atlas/pheno/final/sample_demo_eligible_", 
                    phe_table_extract_date, ".rda"))
 load(file = paste0(raw_data_path, "modeling/genotype_df_filter.rda"))
 ```
 
-```{r}
+``` r
 # make a full dataset
 sample_data_full = sample_demo_eligible %>% 
   select(UniqueSampleId, female, age_last_visit, e4count, 
@@ -237,9 +252,8 @@ sample_data_full = sample_demo_eligible %>%
   select(-UniqueSampleId) %>% as.data.frame()
 dim(sample_data_full) # dim = 2179,4471
 save(sample_data_full, file = paste0(raw_data_path, "modeling/sample_data_full.rda"))
-# output to csv
-write.table(sample_data_full, 
+# # output to csv
+write.table(sample_data_full,
             file = paste0(raw_data_path, "modeling/sample_data_full.csv"),
             sep = ",", quote = F, row.names = F)
 ```
-
