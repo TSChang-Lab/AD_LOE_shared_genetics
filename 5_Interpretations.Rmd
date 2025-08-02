@@ -1,0 +1,709 @@
+---
+title: "Interpretations"
+author: "Mingzhou Fu"
+date: "2024-08-19"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=FALSE}
+rm(list = ls())
+pacman::p_load(tidyverse, h2o, tidymodels, survival)
+raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
+'%!in%' = function(x,y)!('%in%'(x,y))
+```
+
+# Part 1. Shared features
+## 1. Candidate SNPs
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "FUMA_outputs/overlap_fuma.rda"))
+# load in csv file (there are some replication in the seed)
+shared_features = read_csv(file = paste0(raw_data_path, "modeling/shared_features_elnet_new.csv"))
+length(unique(shared_features$seed)) # 1045
+# read in a txt file with rsID
+rsID = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
+                  header = T, sep = "\t", fill = T) %>% 
+  select(uniqID, rsID) %>% unique()
+```
+
+```{r, eval=FALSE}
+sumstat = shared_features %>% group_by(seed) %>% summarise(n = n()) 
+summary(sumstat) # median - 9
+common_feature = shared_features %>% group_by(SNP) %>%
+  summarise(n = n_distinct(seed)) %>% 
+  left_join(overlap_fuma, by = c("SNP" = "chr_pos_name")) %>% 
+  arrange(desc(n)) %>% filter(n >= 1045*0.25) %>%
+  select(SNP, n, rsID, phenotype, chr_num, pos, CADD, nearestGene, func, 
+         posMapFilt, eqtlMapFilt, ciMapFilt) %>% unique()
+dim(common_feature) # dim = (9,12)
+# get coefficients
+common_feature_coef = shared_features %>% 
+  filter(SNP %in% common_feature$SNP) %>% 
+  mutate(AD_sign_label = ifelse(AD_coef >= 0, "pos", "neg")) %>%
+  mutate(LOE_sign_label = ifelse(LOE_coef >= 0, "pos", "neg")) %>%
+  group_by(SNP) %>% 
+  summarise(assigned_sign_AD = ifelse(sum(AD_sign_label == "pos") >= sum(AD_sign_label == "neg"), "pos", "neg"),
+            assigned_sign_LOE = ifelse(sum(LOE_sign_label == "pos") >= sum(LOE_sign_label == "neg"), "pos", "neg"),
+    .groups = "drop") %>% unique() %>% 
+  mutate(signs = ifelse(assigned_sign_AD == assigned_sign_LOE, "Same", "Different")) %>% 
+  select(SNP, signs) %>% unique()
+save(common_feature_coef, file = paste0(raw_data_path, "modeling/common_feature_coef.rda"))
+
+# combine results
+common_feature_final = common_feature %>% 
+  left_join(common_feature_coef, by = "SNP")
+dim(common_feature_final) # dim = (9,13)
+# outputs
+write.table(common_feature_final,
+            file = paste0(output_path, "rsID_shared.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+
+## 2. Map to genes
+```{r, eval=FALSE}
+AD_genes = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/genes.txt"), 
+                      header = T, sep = "\t", fill = T)
+pos_AD = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
+                    header = T, sep = "\t", fill = T) %>% 
+  filter(posMapFilt == 1) %>% select(uniqID, rsID, nearestGene) %>% unique()
+eqtl_AD = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/eqtl.txt"), 
+                     header = T, sep = "\t", fill = T) %>% 
+  select(uniqID, symbol, alignedDirection) %>% unique() %>% 
+  mutate(chr_pos = str_extract(uniqID, "^\\d+:\\d+"))
+AD_CI = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_AD_EUR/ci.txt"), 
+                   header = T, sep = "\t", fill = T) %>% select(SNPs, genes) %>% unique()
+
+LOE_genes = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/genes.txt"), 
+                       header = T, sep = "\t", fill = T)
+pos_LOE = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/snps.txt"),
+                     header = T, sep = "\t", fill = T) %>% 
+  filter(posMapFilt == 1) %>% select(uniqID, rsID, nearestGene) %>% unique()
+eqtl_LOE = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/eqtl.txt"),
+                      header = T, sep = "\t", fill = T) %>% 
+  select(uniqID, symbol, alignedDirection) %>% unique() %>% 
+  mutate(chr_pos = str_extract(uniqID, "^\\d+:\\d+"))
+LOE_CI = read.table(file = paste0(raw_data_path, "FUMA_outputs/FUMA_GGE/ci.txt"), 
+                    header = T, sep = "\t", fill = T) %>% select(SNPs, genes) %>% unique()
+```
+
+```{r, eval=FALSE}
+AD_SNPs_df = common_feature_final %>% filter(phenotype == "AD_EUR") %>%
+  select(rsID, signs) %>% unique() %>% left_join(overlap_fuma) %>% 
+  select(rsID, IndSigSNP, signs, posMapFilt, eqtlMapFilt, ciMapFilt) %>% 
+  mutate(direct = if_else(rsID == IndSigSNP, 1, 0)) %>% unique()
+dim(AD_SNPs_df) # dim = (7, 7)
+LOE_SNPs_df = common_feature_final %>% filter(phenotype == "Epilepsy") %>%
+  select(rsID, signs) %>% unique() %>% left_join(overlap_fuma) %>% 
+  select(rsID, IndSigSNP, signs, posMapFilt, eqtlMapFilt, ciMapFilt) %>% 
+  mutate(direct = if_else(rsID == IndSigSNP, 1, 0)) %>% unique()
+dim(LOE_SNPs_df) # dim = (2, 7)
+```
+
+### 1) Same direction set
+```{r, eval=FALSE}
+AD_SNPs_direct = AD_SNPs_df %>% filter(signs == "Same") %>%
+  filter(direct == 1) %>% pull(rsID) %>% unique() 
+length(AD_SNPs_direct) # 5
+AD_genes_direct_mapped = AD_genes %>% 
+  filter(str_detect(IndSigSNPs, str_c(AD_SNPs_direct, collapse = "|"))) %>% 
+  select(ensg, symbol, chr, start, end, type, posMapSNPs, posMapMaxCADD,
+         eqtlMapSNPs, ciMap, minGwasP) %>% unique() 
+dim(AD_genes_direct_mapped) # dim = (18,11)
+
+AD_SNP_indirect = AD_SNPs_df %>% filter(signs == "Same") %>% filter(direct == 0) 
+# position only, no eqtl or ci
+AD_indirect_genes = pos_AD %>% filter(rsID %in% AD_SNP_indirect$rsID) %>% 
+  pull(nearestGene) %>% unique()
+AD_genes_indirect_mapped = AD_genes %>% 
+  filter(symbol %in% AD_indirect_genes) %>% 
+  select(ensg, symbol, chr, start, end, type, posMapSNPs, posMapMaxCADD,
+         eqtlMapSNPs, ciMap, minGwasP) %>% unique() 
+dim(AD_genes_indirect_mapped) # dim = (2,11)
+# Combine all
+AD_genes_mapped = rbind(AD_genes_direct_mapped, AD_genes_indirect_mapped) %>% 
+  unique() %>% mutate(phenotype = "AD")
+dim(AD_genes_mapped) # dim = (20,12)
+```
+
+```{r, eval=FALSE}
+LOE_SNPs_direct = LOE_SNPs_df %>% filter(signs == "Same") %>%
+  filter(direct == 1) %>% pull(rsID) %>% unique() 
+length(LOE_SNPs_direct) # 0
+LOE_SNP_indirect = LOE_SNPs_df %>% filter(signs == "Same") %>% filter(direct == 0) 
+# no eqtl or ci
+pos_SNP = LOE_SNP_indirect %>% filter(posMapFilt == 1)
+LOE_indirect_genes = pos_LOE %>% filter(rsID %in% pos_SNP$rsID) %>% 
+  pull(nearestGene) %>% unique()
+LOE_genes_indirect_mapped = LOE_genes %>% 
+  filter(symbol %in% LOE_indirect_genes) %>% 
+  select(ensg, symbol, chr, start, end, type, posMapSNPs, posMapMaxCADD,
+         eqtlMapSNPs, ciMap, minGwasP) %>% unique() 
+dim(LOE_genes_indirect_mapped) # dim = (1,11)
+# Combine all
+LOE_genes_mapped = LOE_genes_indirect_mapped %>% mutate(phenotype = "LOE")
+dim(LOE_genes_mapped) # dim = (1,12)
+```
+
+```{r, eval=FALSE}
+all_genes_mapped_same = rbind(AD_genes_mapped, LOE_genes_mapped) %>% unique()
+dim(all_genes_mapped_same) # dim = (21,12)
+# output
+write.table(all_genes_mapped_same,
+            file = paste0(output_path, "all_genes_mapped_same_model.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+### 2) Opposite direction set
+```{r, eval=FALSE}
+LOE_SNPs_direct = LOE_SNPs_df %>% filter(signs == "Different") %>%
+  filter(direct == 1) %>% pull(rsID) %>% unique() 
+length(LOE_SNPs_direct) # 1
+LOE_genes_direct_mapped = LOE_genes %>% 
+  filter(str_detect(IndSigSNPs, str_c(LOE_SNPs_direct, collapse = "|"))) %>% 
+  select(ensg, symbol, chr, start, end, type, posMapSNPs, posMapMaxCADD,
+         eqtlMapSNPs, ciMap, minGwasP) %>% unique() 
+dim(LOE_genes_direct_mapped) # dim = (1,11)
+
+LOE_genes_mapped = LOE_genes_direct_mapped %>% mutate(phenotype = "LOE")
+dim(LOE_genes_mapped) # dim = (1,12)
+```
+
+```{r, eval=FALSE}
+all_genes_mapped_diff = LOE_genes_mapped %>% unique()
+dim(all_genes_mapped_diff) # dim = (1,12)
+# output
+write.table(all_genes_mapped_diff,
+            file = paste0(output_path, "all_genes_mapped_different_model.txt"),
+            sep = "\t", quote = F, row.names = F, col.names = T)
+```
+
+# Part 2. Genetic association tests
+## 1. Shared genetic risk score
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "modeling/sample_data_full_model.rda"))
+load(file = paste0(raw_data_path, "modeling/genotype_df_filter.rda"))
+load(file = paste0(raw_data_path, "modeling/common_feature_coef.rda"))
+```
+
+### 1) Retrain weights for shared SNPs
+See details `4_MultitaskElasticNet.ipynb`.
+```{r, eval=FALSE}
+# read in csv
+shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_new.csv"))
+names(shared_SNP_coef) = c("SNP", "new_coef")
+shared_genotype = genotype_df_filter %>% 
+  select(IID, any_of(shared_SNP_coef$SNP)) %>% unique()
+dim(shared_genotype) # dim = (34463, 9)
+```
+
+```{r}
+shared_SNP_coef_atlas = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_atlas.csv"))
+names(shared_SNP_coef_atlas) = c("SNP", "new_coef")
+# compare the two coefficients
+coef_compare = shared_SNP_coef %>% 
+  left_join(shared_SNP_coef_atlas, by = "SNP", suffix = c("_retrain", "_atlas")) 
+dim(coef_compare) # dim = (8, 3)
+cor(coef_compare$new_coef_retrain, coef_compare$new_coef_atlas) # 0.939832
+```
+
+### 2) Calculate shared-PRS
+```{r}
+load(file = paste0(raw_data_path, "modeling/train_id.rda"))
+length(train_id) # 13200
+shared_genotype_train = shared_genotype %>% filter(IID %in% train_id)
+dim(shared_genotype_train) # dim = (13200, 9)
+load(file = paste0(raw_data_path, "modeling/test_id.rda"))
+length(test_id) # 3300
+shared_genotype_test = shared_genotype %>% filter(IID %in% test_id)
+dim(shared_genotype_test) # dim = (3300, 9)
+```
+
+
+```{r, eval=FALSE}
+# Training set
+# Filter genotype info
+genotype.targ = shared_genotype_train %>% select(all_of(shared_SNP_coef_atlas$SNP))
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_atlas$new_coef
+pred_prs_train = cbind(pred_prs, shared_genotype_train[, 'IID']) %>% as.data.frame()
+names(pred_prs_train) = c('AD_LOE_shared_PRS', 'UniqueSampleId')
+mean_X = mean(pred_prs_train$AD_LOE_shared_PRS) # 0.009156926
+sd_X = sd(pred_prs_train$AD_LOE_shared_PRS) # 0.0180461
+
+# Testing set
+genotype.targ = shared_genotype_test %>% select(all_of(shared_SNP_coef_atlas$SNP))
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_atlas$new_coef
+pred_prs_test = cbind(pred_prs, shared_genotype_test[, 'IID']) %>% as.data.frame()
+names(pred_prs_test) = c('AD_LOE_shared_PRS', 'UniqueSampleId')
+
+# Normalize PRS
+pred_prs_atlas = rbind(pred_prs_train, pred_prs_test) %>% as.data.frame() %>%
+  mutate(AD_LOE_shared_PRS_normalized = (AD_LOE_shared_PRS - mean_X) / sd_X)
+dim(pred_prs_atlas) # dim = (16500, 3)
+save(pred_prs_atlas, file = paste0(raw_data_path, "modeling/AD_LOE_shared_PRS.rda"))
+```
+
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "atlas/pheno/final/atlas_subset.rda"))
+dim(atlas_subset) # dim = 16500,45
+load(file = paste0(raw_data_path, "modeling/sample_data_full_model.rda"))
+dim(sample_data_full) # dim = (9986, 4472)
+# Join sample demo
+patient_genetic = sample_data_full %>% 
+  select(any_of(names(atlas_subset))) %>% inner_join(atlas_subset) %>% 
+  left_join(pred_prs_atlas) %>% select(-AD_LOE_shared_PRS) %>% 
+  # filter(UniqueSampleId %in% c(case_ids, control_ids)) %>% unique() %>% 
+  mutate(APOE = ifelse(e4count == 0, 0, 1)) %>% 
+  mutate(case = case_when(
+    AD == 1 | LOE == 1 ~ 1,
+    AD == 0 & LOE == 0 ~ 0
+  )) %>% 
+  mutate(case_overlap = case_when(
+    AD == 1 & LOE == 1 ~ 1,
+    AD == 0 | LOE == 0 ~ 0
+  ))
+dim(patient_genetic) # dim = (9986, 48)
+
+patient_genetic_test = patient_genetic %>% filter(UniqueSampleId %in% test_id)
+dim(patient_genetic_test) # dim = (2002, 48)
+# patient_genetic_train = patient_genetic %>% filter(UniqueSampleId %in% train_id)
+# dim(patient_genetic_train) # dim = (13200, 48)
+```
+
+## 2. Test for associations
+### 1) AD | LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+demo_basic = 'age_first_visit + female + record_length + PC1 + PC2 + PC3 + PC4 + PC5'
+
+f1 = as.formula(paste('case ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('case ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r, eval=FALSE}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('case ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+### 2) AD & LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('case_overlap ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('case_overlap ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('case_overlap ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+### 3) AD ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('AD ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('AD ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('AD ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+
+### 4) LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('LOE ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('LOE ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+## == Supplementary: Model evaluation ==
+```{r}
+result_elnet_new = read_csv(file = paste0(raw_data_path, "modeling/result_elnet_new.csv"))
+AD_AUCPR = result_elnet_new %>% select(seed, model, auprc_ad) %>% drop_na() %>% unique() %>% 
+  pivot_wider(names_from = model, values_from = auprc_ad)
+names(AD_AUCPR) = c("seed", "multi", "single")
+AD_AUCPR = AD_AUCPR %>% mutate(diff_AD = multi - single) %>% 
+  select(seed, diff_AD) %>% unique()
+LOE_AUCPR = result_elnet_new %>% select(seed, model, auprc_loe) %>% drop_na() %>% unique() %>%
+  pivot_wider(names_from = model, values_from = auprc_loe)
+names(LOE_AUCPR) = c("seed", "multi", "single")
+LOE_AUCPR = LOE_AUCPR %>% mutate(diff_LOE = multi - single) %>% 
+  select(seed, diff_LOE) %>% unique()
+
+results_full = AD_AUCPR %>% inner_join(LOE_AUCPR, by = "seed") %>% 
+  filter(diff_AD > 0 & diff_LOE > 0) %>%
+  mutate(diff = diff_AD + diff_LOE) %>% arrange(desc(diff)) 
+dim(results_full) # dim = (678, 4)
+```
+
+### 1. AD
+```{r, eval=FALSE}
+aucpr_AD = result_elnet_new %>%  
+  select(model, seed, auprc_ad) %>% drop_na() %>% unique() %>%
+  pivot_wider(names_from = model, values_from = auprc_ad)
+
+wilcox_AD_aucpr = wilcox.test(aucpr_AD$`Multi-Task Elastic Net`, 
+                              aucpr_AD$`Separate Elastic Net (AD)`, 
+                              paired = TRUE, alternative = "greater")
+wilcox_AD_aucpr
+```
+
+### 2. LOE
+```{r, eval=FALSE}
+aucpr_LOE = result_elnet_new %>%  
+  select(model, seed, auprc_loe) %>% drop_na() %>% unique() %>%
+  pivot_wider(names_from = model, values_from = auprc_loe)
+wilcox_LOE_aucpr = wilcox.test(aucpr_LOE$`Multi-Task Elastic Net`, 
+                              aucpr_LOE$`Separate Elastic Net (LOE)`, 
+                              paired = TRUE, alternative = "greater")
+wilcox_LOE_aucpr
+```
+
+## Sensitivity: Shared genetic risk score (without APOE)
+## 1. Shared genetic risk score
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "modeling/sample_data_full_model.rda"))
+load(file = paste0(raw_data_path, "modeling/genotype_df_filter.rda"))
+load(file = paste0(raw_data_path, "modeling/common_feature_coef.rda"))
+```
+
+### 1) Retrain weights for shared SNPs
+See details `4_MultitaskElasticNet.ipynb`.
+```{r, eval=FALSE}
+# read in csv
+shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_new.csv"))
+names(shared_SNP_coef) = c("SNP", "new_coef")
+shared_genotype = genotype_df_filter %>% 
+  select(IID, any_of(shared_SNP_coef$SNP)) %>% unique()
+dim(shared_genotype) # dim = (34463, 9)
+names(shared_genotype)
+```
+
+```{r}
+shared_genotype_rmapoe = shared_genotype %>% 
+  select(IID, "chr2:127133851:A:C", "chr2:103489151:T:C",
+         "chr10:11676714:A:G", "chr8:27607412:G:A") %>% unique()
+dim(shared_genotype_rmapoe) # dim = (34463, 5)
+```
+
+```{r}
+shared_SNP_coef_rmapoe = shared_SNP_coef %>% 
+  filter(SNP %in% c("chr2:127133851:A:C", "chr2:103489151:T:C", 
+                    "chr10:11676714:A:G", "chr8:27607412:G:A"))
+dim(shared_SNP_coef_rmapoe) # dim = (4, 2)
+```
+
+
+### 2) Calculate shared-PRS
+```{r}
+load(file = paste0(raw_data_path, "modeling/train_id.rda"))
+length(train_id) # 13200
+shared_genotype_train = shared_genotype_rmapoe %>% filter(IID %in% train_id)
+dim(shared_genotype_train) # dim = (13200, 5)
+load(file = paste0(raw_data_path, "modeling/test_id.rda"))
+length(test_id) # 3300
+shared_genotype_test = shared_genotype_rmapoe %>% filter(IID %in% test_id)
+dim(shared_genotype_test) # dim = (3300, 5)
+```
+
+```{r, eval=FALSE}
+# Training set
+# Filter genotype info
+genotype.targ = shared_genotype_train %>% select(all_of(shared_SNP_coef_rmapoe$SNP))
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_rmapoe$new_coef
+pred_prs_train = cbind(pred_prs, shared_genotype_train[, 'IID']) %>% as.data.frame()
+names(pred_prs_train) = c('AD_LOE_shared_PRS_rmapoe', 'UniqueSampleId')
+mean_X = mean(pred_prs_train$AD_LOE_shared_PRS_rmapoe) # -0.0003035272
+sd_X = sd(pred_prs_train$AD_LOE_shared_PRS_rmapoe) # 0.01780379
+
+# Testing set
+genotype.targ = shared_genotype_test %>% select(all_of(shared_SNP_coef_rmapoe$SNP))
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_rmapoe$new_coef
+pred_prs_test = cbind(pred_prs, shared_genotype_test[, 'IID']) %>% as.data.frame()
+names(pred_prs_test) = c('AD_LOE_shared_PRS_rmapoe', 'UniqueSampleId')
+
+# Normalize PRS
+pred_prs_atlas_rmapoe = rbind(pred_prs_train, pred_prs_test) %>% as.data.frame() %>%
+  mutate(AD_LOE_shared_PRS_normalized_rmapoe = (AD_LOE_shared_PRS_rmapoe - mean_X) / sd_X)
+dim(pred_prs_atlas_rmapoe) # dim = (16500, 3)
+```
+
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "atlas/pheno/final/atlas_subset.rda"))
+dim(atlas_subset) # dim = 16500,45
+# Join sample demo
+load(file = paste0(raw_data_path, "modeling/sample_data_full_model.rda"))
+dim(sample_data_full) # dim = (9986, 4472)
+# Join sample demo
+patient_genetic = sample_data_full %>% 
+  select(any_of(names(atlas_subset))) %>% inner_join(atlas_subset) %>% 
+  left_join(pred_prs_atlas_rmapoe) %>% select(-AD_LOE_shared_PRS_rmapoe) %>% 
+  # filter(UniqueSampleId %in% c(case_ids, control_ids)) %>% unique() %>% 
+  mutate(APOE = ifelse(e4count == 0, 0, 1)) %>% 
+  mutate(case = case_when(
+    AD == 1 | LOE == 1 ~ 1,
+    AD == 0 & LOE == 0 ~ 0
+  )) %>% 
+  mutate(case_overlap = case_when(
+    AD == 1 & LOE == 1 ~ 1,
+    AD == 0 | LOE == 0 ~ 0
+  ))
+dim(patient_genetic) # dim = (9986, 48)
+
+patient_genetic_test = patient_genetic %>% filter(UniqueSampleId %in% test_id)
+dim(patient_genetic_test) # dim = (2002, 48)
+```
+
+## 2. Test for associations
+### 1) AD | LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+demo_basic = 'age_first_visit + female + record_length + PC1 + PC2 + PC3 + PC4 + PC5'
+
+f1 = as.formula(paste('case ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('case ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r, eval=FALSE}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('case ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+### 2) AD & LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('case_overlap ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('case_overlap ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('case_overlap ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+### 3) AD ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('AD ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('AD ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('AD ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+
+### 4) LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('LOE ~ e4count + ', demo_basic))
+apoe = glm(f1, data = patient_genetic_test, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs = glm(f2, data = patient_genetic_test, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('LOE ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic_test, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+```
+
+```{r}
+
+```
+
+

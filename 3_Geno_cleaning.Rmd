@@ -1,9 +1,15 @@
-Genotype data cleaning
-================
-Mingzhou Fu
-2024-08-13
+---
+title: "Genotype data cleaning"
+author: "Mingzhou Fu"
+date: "2024-08-13"
+output: github_document
+---
 
-``` r
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, eval=FALSE}
 rm(list = ls())
 pacman::p_load(tidyverse, GenomicRanges, rtracklayer, bigsnpr, bigreadr, 
                data.table, ieugwasr, R.utils)
@@ -13,12 +19,10 @@ output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
 ```
 
 # Part 0. GWAS preprocessing
-
 Preprocessing of GWAS summary statistics, ran once
 
 ## 1. AD EUR
-
-``` r
+```{r, eval=FALSE}
 sumstats_file = paste0(raw_data_path, 
                        "sumstats/raw/Wightman2021_AD_EUR.txt.gz")
 sumstats = fread(sumstats_file)
@@ -32,7 +36,7 @@ write.table(sumstats_clean,
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-``` r
+```{r, eval=FALSE}
 AD_sumstats_clean = sumstats_clean
 # read in reference file
 ref_file = paste0(raw_data_path, 'sumstats/raw/hm3_151_match.txt')
@@ -55,8 +59,7 @@ write.table(sumstats_ldsc,
 ```
 
 ## 2. ILAEC EUR (European descent (92%))
-
-``` r
+```{r, eval=FALSE}
 sumstats_file = paste0(raw_data_path, 
                        "sumstats/raw/ILAEC2023_GGE_EUR.tsv.gz")
 sumstats = fread(sumstats_file)
@@ -70,7 +73,7 @@ write.table(sumstats_clean,
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
-``` r
+```{r, eval=FALSE}
 LOE_sumstats_clean = sumstats_clean
 sumstats_ldsc = LOE_sumstats_clean %>% 
   mutate(N = 49843) %>% 
@@ -84,13 +87,11 @@ write.table(sumstats_ldsc,
             sep = "\t", quote = F, row.names = F, col.names = T)
 ```
 
+
 # Part 1. FUMA GWAS results
-
 ## 1. Clean FUMA results
-
 ### 1) AD Kunkle EUR
-
-``` r
+```{r, eval=FALSE}
 # Full list of independent significant SNPs + LD SNPs (candidate SNPs, catch as many SNPs as we can from ATLAS)
 full_AD_EUR = read.table(file = paste0(raw_data_path, 
                                        "FUMA_outputs/FUMA_AD_EUR/snps.txt"), 
@@ -108,8 +109,7 @@ dim(candi_AD_EUR) # dim = (4154,15)
 ```
 
 ### 2) ILAEC EUR (European descent (92%))
-
-``` r
+```{r, eval=FALSE}
 # Full list of independent significant SNPs + LD SNPs (candidate SNPs, catch as many SNPs as we can from ATLAS)
 full_Epilepsy_EUR = read.table(file = paste0(raw_data_path, 
                                              "FUMA_outputs/FUMA_GGE/snps.txt"), 
@@ -127,8 +127,7 @@ dim(candi_Epilepsy_EUR) # dim = (2104,15)
 ```
 
 ## 2. Liftover + annotation
-
-``` r
+```{r, eval=FALSE}
 candi_full = rbind(candi_AD_EUR, candi_Epilepsy_EUR) %>% as.data.frame() %>% 
   mutate(index = seq(1, nrow(.)))
 # liftover
@@ -151,9 +150,8 @@ liftover_full = candi_full %>%
 dim(liftover_full) # dim = 6240,15
 ```
 
-## 3. Extract and clean ATLAS data – Server step
-
-``` r
+## 3. Extract and clean ATLAS data -- Server step
+```{r, eval=FALSE}
 # Check overlap with FUMA
 liftover_1 = liftover_full %>% dplyr::rename("chr_num" = "chr") %>% 
   mutate(chr_pos_name1 = paste0("chr", chr_num, ":", pos, ":", a0, ":", a1)) %>% 
@@ -173,10 +171,10 @@ write.table(extract_fuma,
             sep = "\t", quote = F, row.names = F, col.names = F)
 ```
 
-``` r
+```{r, eval=FALSE}
 # Read in the QCed genotype and sumstats files + preprocess the bed file (only need to do once for each data set)
 geno_file = paste0(raw_data_path, 'atlas/geno/fuma.raw')
-snp_readBed(paste0(geno_file, '.bed'))
+# snp_readBed(paste0(geno_file, '.bed'))
 obj.bigSNP = snp_attach(paste0(geno_file, '.rds'))
 # extract the SNP information from the genotype
 map = obj.bigSNP$map[-3]
@@ -192,7 +190,7 @@ genotype_df = as.matrix(genotype[])[,] %>% as.data.frame()
 colnames(genotype_df) = map$rsid
 ```
 
-``` r
+```{r, eval=FALSE}
 # The above SNPs have a missing, we decide to exclude those SNPs (N = 1)
 missing_info = genotype_df %>% 
   summarise_all(function(x) sum(is.na(x))) %>% gather(variable, missing_count) 
@@ -214,10 +212,8 @@ save(genotype_df_fam, file = paste0(raw_data_path,
 ```
 
 # Part 2. Prioritization of SNPs
-
 ## 1. Select mapped SNPs
-
-``` r
+```{r, eval=FALSE}
 candidate_snp_info = overlap_fuma %>% 
   select(chr_num, pos, rsID, gwasP, IndSigSNP, func, CADD, lead, phenotype, 
          nearestGene, posMapFilt, eqtlMapFilt, ciMapFilt) %>%
@@ -235,25 +231,98 @@ save(genotype_df_filter, file = paste0(raw_data_path, "modeling/genotype_df_filt
 ```
 
 ## 2. Finalize modeling dataframe
-
-``` r
-phe_table_extract_date = "2024-08-13"
-load(file = paste0(raw_data_path, "atlas/pheno/final/sample_demo_eligible_", 
-                   phe_table_extract_date, ".rda"))
+```{r, eval=FALSE}
+load(file = paste0(raw_data_path, "atlas/pheno/final/atlas_subset.rda"))
+dim(atlas_subset) # dim = 16500,45
 load(file = paste0(raw_data_path, "modeling/genotype_df_filter.rda"))
 ```
 
-``` r
-# make a full dataset
-sample_data_full = sample_demo_eligible %>% 
-  select(UniqueSampleId, female, age_last_visit, e4count, 
+```{r, eval=FALSE}
+case_final = atlas_subset %>% filter(AD == 1 | LOE == 1) %>% 
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, PC1:PC10) %>%
+  inner_join(genotype_df_filter, by = c("UniqueSampleId" = "IID")) %>%
+  select(-UniqueSampleId) %>% as.data.frame() 
+dim(case_final) # dim = 990,4472
+
+control_final = atlas_subset %>% filter(AD == 0 & LOE == 0) %>% 
+  filter(age_last_visit >= 70 & record_length >= 5) %>%
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
          AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, PC1:PC10) %>%
   inner_join(genotype_df_filter, by = c("UniqueSampleId" = "IID")) %>%
   select(-UniqueSampleId) %>% as.data.frame()
-dim(sample_data_full) # dim = 2179,4471
-save(sample_data_full, file = paste0(raw_data_path, "modeling/sample_data_full.rda"))
-# # output to csv
+dim(control_final) # dim = 8996,4472
+
+# make a full dataset
+sample_data_full = rbind(case_final, control_final) %>% as.data.frame()
+dim(sample_data_full) # dim = 9986,4472
+save(sample_data_full, file = paste0(raw_data_path, "modeling/sample_data_full_model.rda"))
+# output to csv
 write.table(sample_data_full,
-            file = paste0(raw_data_path, "modeling/sample_data_full.csv"),
+            file = paste0(raw_data_path, "modeling/sample_data_full_model.csv"),
             sep = ",", quote = F, row.names = F)
 ```
+
+```{r}
+atlas_subset_full = atlas_subset %>% 
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, PC1:PC10) %>%
+  inner_join(genotype_df_filter, by = c("UniqueSampleId" = "IID")) %>%
+  select(-UniqueSampleId) %>% as.data.frame() 
+dim(atlas_subset_full) # dim = 16500,4472
+# output to csv
+write.table(atlas_subset_full,
+            file = paste0(raw_data_path, "modeling/atlas_subset_full.csv"),
+            sep = ",", quote = F, row.names = F)
+```
+
+```{r}
+# read in X_test csv
+X_test = read.csv(paste0(raw_data_path, "modeling/X_test_atlas.csv"), 
+                  header = T, stringsAsFactors = F)
+dim(X_test) # dim = 3300,4471
+atlas_subset_full = atlas_subset %>% 
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, PC1:PC10)
+X_test_short = atlas_subset_full[as.numeric(X_test$X),]
+dim(X_test_short) # dim = 3300,19
+test_id = X_test_short$UniqueSampleId %>% unique()
+length(test_id) # length = 3300
+train_id = atlas_subset_full$UniqueSampleId %>% unique() %>% setdiff(test_id)
+length(train_id) # length = 13200
+
+save(train_id, file = paste0(raw_data_path, "modeling/train_id.rda"))
+save(test_id, file = paste0(raw_data_path, "modeling/test_id.rda"))
+```
+
+
+
+```{r}
+demo_case = atlas_subset %>% filter(AD == 1 | LOE == 1) %>% 
+  mutate(group = "case")
+demo_control = atlas_subset %>% filter(AD == 0 & LOE == 0) %>%
+  filter(age_last_visit >= 70 & record_length >= 5) %>%
+  mutate(group = "control")
+full_compare = rbind(demo_case, demo_control) %>% as.data.frame()
+dim(full_compare) # dim = 9986,46
+```
+
+```{r}
+full_compare %>% mutate(LOE = as.factor(LOE)) %>% 
+  select(LOE, AD, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid) %>% 
+  tbl_summary(by = LOE, 
+              statistic = list(all_continuous() ~ "{mean} ({sd})"),
+              digits = all_continuous() ~ 2) %>% add_p()
+```
+
+```{r}
+full_compare %>% mutate(AD = as.factor(AD)) %>% 
+  select(AD, LOE, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid) %>% 
+  tbl_summary(by = AD, 
+              statistic = list(all_continuous() ~ "{mean} ({sd})"),
+              digits = all_continuous() ~ 2) %>% add_p()
+```
+
+

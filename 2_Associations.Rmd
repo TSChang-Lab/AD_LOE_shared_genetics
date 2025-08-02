@@ -1,0 +1,516 @@
+---
+title: "Associations"
+author: "Mingzhou Fu"
+date: "2024-08-13"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Part 1. DDR Modeling
+```{r}
+rm(list = ls())
+pacman::p_load(tidyverse, PheWAS, tidymodels, gtsummary, cmprsk)
+raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
+'%!in%' = function(x,y)!('%in%'(x,y))
+load(file = paste0(raw_data_path, "ddr/mod/ddr_full.RData"))
+load(file = paste0(raw_data_path, "atlas/pheno/final/atlas_subset.rda"))
+```
+
+## 1. Cox regression
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = ddr_full %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid) %>% 
+         unique() %>% drop_na() %>% filter(follow_up_time > 0)
+dim(patient_AD_longitudinal) # dim = (415623,11)
+```
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_AD_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = ddr_full %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid) %>% 
+  unique() %>% drop_na() %>% filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (415364,11)
+```
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_LOE_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+## 2. FG modeling
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = ddr_full %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    AD == 0 & (!is.na(DeathDate)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid) %>% 
+         unique() %>% drop_na() %>% filter(follow_up_time > 0)
+dim(patient_AD_longitudinal) # dim = (415623,11)
+save(patient_AD_longitudinal, 
+     file = paste0(raw_data_path, "modeling/ddr_patient_AD_longitudinal.RData"))
+```
+
+```{r}
+cov_health = model.matrix(~ LOE_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_AD_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_AD_longitudinal$follow_up_time, 
+                fstatus = patient_AD_longitudinal$AD_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = ddr_full %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    LOE == 0 & (!is.na(DeathDate)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid) %>% 
+         unique() %>% drop_na() %>% filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (415364,11)
+save(patient_LOE_longitudinal, 
+     file = paste0(raw_data_path, "modeling/ddr_patient_LOE_longitudinal.RData"))
+```
+
+```{r}
+cov_health = model.matrix(~ AD_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_LOE_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_LOE_longitudinal$follow_up_time, 
+                fstatus = patient_LOE_longitudinal$LOE_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+
+# Part 2. ATLAS Modeling
+## 1. Cox regression
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = atlas_subset %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count, 
+         AD_PRS_rmapoe_norm) %>% unique() %>% drop_na() %>% 
+         filter(follow_up_time > 0)
+dim(patient_AD_longitudinal) # dim = (16480,13)
+```
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_AD_longitudinal)
+cox_genetic = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age +
+                      female + record_length + HTN + diabetes + stroke + 
+                      hyperlipid + e4count + AD_PRS_rmapoe_norm,
+                    data = patient_AD_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+```{r}
+gen_sum = rbind(tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[9,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[10,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+gen_sum
+```
+
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = atlas_subset %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count, 
+         AD_PRS_rmapoe_norm) %>% unique() %>% drop_na() %>% 
+  filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (16462,13)
+```
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_LOE_longitudinal)
+cox_genetic = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age +
+                      female + record_length + HTN + diabetes + stroke + 
+                      hyperlipid + e4count + AD_PRS_rmapoe_norm,
+                   data = patient_LOE_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+```{r}
+gen_sum = rbind(tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[9,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[10,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+gen_sum
+```
+
+
+## 2. FG modeling
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = atlas_subset %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    AD == 0 & (!is.na(DeathDate)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count, 
+         AD_PRS_rmapoe_norm) %>% unique() %>% drop_na() %>% 
+         filter(follow_up_time > 0)
+dim(patient_AD_longitudinal) # dim = (16480,13)
+```
+
+```{r}
+cov_health = model.matrix(~ LOE_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_AD_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_AD_longitudinal$follow_up_time, 
+                fstatus = patient_AD_longitudinal$AD_status, failcode = 1,
+                cencode = 0)
+
+cov_genetic = model.matrix(~ LOE_status + baseline_age + female + record_length + 
+                             HTN + diabetes + stroke + hyperlipid + e4count +
+                             AD_PRS_rmapoe_norm,
+                           data = patient_AD_longitudinal)[, -1]
+crr_genetic = crr(cov1 = cov_genetic, ftime = patient_AD_longitudinal$follow_up_time, 
+                fstatus = patient_AD_longitudinal$AD_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+```{r}
+gen_sum = rbind(tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[9,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[10,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+gen_sum
+```
+
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = atlas_subset %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    LOE == 0 & (!is.na(DeathDate)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(PatientID, AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count, 
+         AD_PRS_rmapoe_norm) %>% unique() %>% drop_na() %>% 
+         filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (16462,13)
+```
+
+```{r}
+cov_health = model.matrix(~ AD_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_LOE_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_LOE_longitudinal$follow_up_time, 
+                fstatus = patient_LOE_longitudinal$LOE_status, failcode = 1,
+                cencode = 0)
+
+cov_genetic = model.matrix(~ AD_status + baseline_age + female + record_length + 
+                             HTN + diabetes + stroke + hyperlipid + e4count +
+                             AD_PRS_rmapoe_norm,
+                           data = patient_LOE_longitudinal)[, -1]
+crr_genetic = crr(cov1 = cov_genetic, ftime = patient_LOE_longitudinal$follow_up_time, 
+                fstatus = patient_LOE_longitudinal$LOE_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+```{r}
+gen_sum = rbind(tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[9,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[10,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+gen_sum
+```
+
+## 3. Genetic associations
+```{r}
+case_final = atlas_subset %>% filter(AD == 1 | LOE == 1) %>% 
+  filter(age_last_visit >= 70 & record_length >= 5) %>% 
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, record_length, PC1:PC10,
+         HTN, diabetes, stroke, hyperlipid) 
+dim(case_final) # dim = 990,24
+
+control_final = atlas_subset %>% filter(AD == 0 & LOE == 0) %>% 
+  filter(age_last_visit >= 70 & record_length >= 5) %>%
+  select(UniqueSampleId, female, age_first_visit, age_last_visit, e4count, 
+         AD_PRS_full_norm, AD_PRS_rmapoe_norm, AD, LOE, record_length, PC1:PC10,
+         HTN, diabetes, stroke, hyperlipid)
+dim(control_final) # dim = 8996,24
+
+sample_data_full = rbind(case_final, control_final) %>% as.data.frame()
+dim(sample_data_full) # dim = 9986,24
+```
+
+```{r}
+demo_basic = 'age_last_visit + female + PC1 + PC2 + PC3 + PC4 + PC5 '
+
+f1 = as.formula(paste('AD ~ e4count + ', demo_basic))
+AD_apoe = glm(f1, data = sample_data_full, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ e4count + ', demo_basic))
+LOE_apoe = glm(f2, data = sample_data_full, family = 'binomial')
+
+sum_res = rbind(tidy(AD_apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(LOE_apoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+demo_basic = 'age_last_visit + female + PC1 + PC2 + PC3 + PC4 + PC5 '
+
+f1 = as.formula(paste('AD ~ AD_PRS_full_norm + ', demo_basic))
+AD_apoe = glm(f1, data = sample_data_full, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ AD_PRS_full_norm + ', demo_basic))
+LOE_apoe = glm(f2, data = sample_data_full, family = 'binomial')
+
+sum_res = rbind(tidy(AD_apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(LOE_apoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+demo_basic = 'age_last_visit + female + PC1 + PC2 + PC3 + PC4 + PC5 '
+
+f1 = as.formula(paste('AD ~ AD_PRS_rmapoe_norm + ', demo_basic))
+AD_apoe = glm(f1, data = sample_data_full, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ AD_PRS_rmapoe_norm + ', demo_basic))
+LOE_apoe = glm(f2, data = sample_data_full, family = 'binomial')
+
+sum_res = rbind(tidy(AD_apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(LOE_apoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+

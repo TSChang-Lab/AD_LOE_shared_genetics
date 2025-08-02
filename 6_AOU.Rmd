@@ -1,0 +1,623 @@
+---
+title: "6_AllofUs"
+author: "Joy Fu"
+date: "2025-06-08"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+rm(list = ls())
+pacman::p_load(tidyverse, PheWAS, tidymodels, gtsummary, cmprsk, bigsnpr, 
+               bigreadr, data.table)
+raw_data_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/data/"
+output_path = "/Users/joyfu/Desktop/Projects/AD-LOE-genetics/output/"
+'%!in%' = function(x,y)!('%in%'(x,y))
+```
+
+# Part 0. Genetic data extraction preparation
+## 1. List of SNPs to extract
+```{r}
+# read in csv
+shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_new.csv"))
+names(shared_SNP_coef) = c("SNP", "new_coef")
+dim(shared_SNP_coef) # dim = (8,2)
+
+shared_SNP_df = shared_SNP_coef %>% 
+  separate(SNP, into = c("chr", "pos", "ref", "alt"), sep = ":") %>%
+  mutate(pos = as.numeric(pos), pos_plus = pos + 1) %>%
+  mutate(output_var = paste0(chr, ":", pos, "-", pos_plus)) %>% 
+  select(output_var) %>% unique() %>% mutate(type = "shared_SNP")
+dim(shared_SNP_df) # dim = (8,2)  
+```
+
+```{r}
+# add APOE SNPs
+apoe_df = data.frame(output_var = c("chr19:44908684-44908685", 
+                                    "chr19:44908822-44908823"),
+                     type = "apoe_SNP") 
+# combine dataframes
+output_SNP_df = rbind(shared_SNP_df, apoe_df) %>% unique()
+dim(output_SNP_df) # dim = (10,2)
+# output to txt
+write.table(output_SNP_df, sep = "\t", 
+            file = paste0(raw_data_path, "AOU/AD_LOE_output_SNPs.txt"), 
+            row.names = FALSE, col.names = TRUE, quote = FALSE)
+```
+
+## 2. Genetic data preparation
+```{r}
+# Read in the QCed genotype and sumstats files + preprocess the bed file (only need to do once for each data set)
+geno_file = paste0(raw_data_path, 'AOU/AD_LOE_shared_biallelic_plink')
+# snp_readBed(paste0(geno_file, '.bed'))
+obj.bigSNP = snp_attach(paste0(geno_file, '.rds'))
+# extract the SNP information from the genotype
+map = obj.bigSNP$map[-3]
+names(map) = c("chr", "rsid", "pos", "a1", "a0")
+# Rename rsid to keep consistent with bim file
+map = map %>% mutate(RSID = paste0(chr, ":", pos, ":", a0, ":", a1)) %>% 
+  select(chr, RSID, pos, a1, a0) %>% dplyr::rename("rsid" = "RSID")
+# Get fam order
+fam.order = as.data.table(obj.bigSNP$fam)
+# get genotype info
+genotype = obj.bigSNP$genotypes
+genotype_df = as.matrix(genotype[])[,] %>% as.data.frame()
+colnames(genotype_df) = map$rsid
+dim(genotype_df) # dim = (414830,14)
+```
+
+```{r, eval=FALSE}
+# The above SNPs have a missing, we decide to exclude those SNPs (N = 1)
+missing_info = genotype_df %>% 
+  summarise_all(function(x) sum(is.na(x))) %>% gather(variable, missing_count) 
+columns_with_missing = missing_info %>% 
+  filter(missing_count > 0) %>% pull(variable)
+length(columns_with_missing) # 14
+
+genotype_df_fam = cbind(fam.order[,1:2], genotype_df) %>% as.data.frame()
+colnames(genotype_df_fam)[1:2] = c("FID", "IID")
+dim(genotype_df_fam) # 414830,16
+```
+
+### APOE
+```{r}
+# define APOE-e4 status - if you need to define the APOE status in your datas
+apoe_status = genotype_df_fam %>% 
+  select(IID, `chr19:44908684:T:C`, `chr19:44908822:C:T`) %>%
+  mutate(e4count = case_when(
+    `chr19:44908684:T:C` == 0 & `chr19:44908822:C:T` == 0 ~ 0,
+    `chr19:44908684:T:C` == 0 & `chr19:44908822:C:T` == 1 ~ 1,
+    `chr19:44908684:T:C` == 0 & `chr19:44908822:C:T` == 2 ~ 2,
+    `chr19:44908684:T:C` == 1 & `chr19:44908822:C:T` == 0 ~ 0,
+    `chr19:44908684:T:C` == 1 & `chr19:44908822:C:T` == 1 ~ 1,
+    `chr19:44908684:T:C` == 1 & `chr19:44908822:C:T` == 2 ~ 1,
+    `chr19:44908684:T:C` == 2 & `chr19:44908822:C:T` == 0 ~ 0,
+    `chr19:44908684:T:C` == 2 & `chr19:44908822:C:T` == 1 ~ 0,
+    `chr19:44908684:T:C` == 2 & `chr19:44908822:C:T` == 2 ~ 0
+  )) %>% select(IID, e4count) %>% dplyr::rename("person_id" = "IID")
+dim(apoe_status) # 414830,2
+```
+
+### Shared risk score
+```{r}
+# read in csv
+shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_atlas.csv"))
+names(shared_SNP_coef) = c("SNP", "new_coef")
+dim(shared_SNP_coef) # dim = (8,2)
+shared_genotype = genotype_df_fam %>% 
+  select(IID, any_of(shared_SNP_coef$SNP)) %>% unique()
+dim(shared_genotype) # dim = (414830, 8)
+setdiff(shared_SNP_coef$SNP, names(shared_genotype)) # "chr8:27607412:G:A"
+shared_SNP_coef_flip = shared_SNP_coef %>% 
+  mutate(new_coef = ifelse(str_detect(SNP, "chr8:27607412:G:A"), -new_coef, new_coef),
+         new_snp = ifelse(str_detect(SNP, "chr8:27607412:G:A"), 
+                   "chr8:27607412:A:G", SNP)) 
+shared_genotype = genotype_df_fam %>% 
+  select(IID, any_of(shared_SNP_coef_flip$new_snp)) %>% unique()
+dim(shared_genotype) # dim = (414830, 9)
+```
+
+```{r, eval=FALSE}
+# Filter genotype info
+genotype.targ = shared_genotype %>% select(all_of(shared_SNP_coef_flip$new_snp))
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_flip$new_coef
+pred_prs_final = cbind(pred_prs, shared_genotype[, 'IID']) %>% as.data.frame()
+names(pred_prs_final) = c('AD_LOE_shared_PRS', 'person_id')
+mean_X = 0.009156926 # use ATLAS sample mean
+sd_X = 0.0180461 # use ATLAS sample sd
+# Normalize PRS
+pred_prs_final = pred_prs_final %>% 
+  mutate(AD_LOE_shared_PRS_normalized = (AD_LOE_shared_PRS - mean_X) / sd_X)
+dim(pred_prs_final) # dim = (414830, 3)
+
+aou_genetics = pred_prs_final %>% 
+  left_join(apoe_status, by = "person_id") %>% 
+  select(person_id, AD_LOE_shared_PRS_normalized, e4count) %>% unique()
+dim(aou_genetics) # dim = (414830, 3)
+save(aou_genetics, file = paste0(raw_data_path, "AOU/aou_genetics.rda"))
+```
+
+# Part 1. Descriptive statistics
+```{r}
+load(file = paste0(raw_data_path, "atlas/pheno/final/atlas_subset.rda"))
+load(file = paste0(raw_data_path, "AOU/sample_demo_eligible_AOU.rda"))
+# redo the LOE definition
+LOE_AOU_rm = sample_demo_eligible %>% filter(LOE == 1) %>% 
+  mutate(label = if_else(first_epi_age >= 60, "keep", "drop"))
+table(LOE_AOU_rm$label) 
+drop_id = LOE_AOU_rm %>% filter(label == "drop") %>% pull(person_id)
+length(drop_id) # 630
+load(file = paste0(raw_data_path, "AOU/aou_genetics.rda"))
+```
+
+## 1. ATLAS vs. AOU
+```{r}
+ucla_sample = atlas_subset %>% 
+  mutate(group = "ATLAS") %>% 
+  select(LOE, AD, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid, e4count, PC1, group) %>% 
+  unique() %>% drop_na()
+dim(ucla_sample) # dim = (16500, 14)
+aou_sample = final_aou_update %>% mutate(group = "AOU") %>%
+  filter(!person_id %in% drop_id) %>%
+  left_join(aou_genetics, by = "person_id") %>% 
+  filter(!is.na(AD_LOE_shared_PRS_normalized)) %>%
+  select(all_of(names(ucla_sample)))  %>% unique() %>% drop_na()
+dim(aou_sample) # dim = (52493, 14)
+sample_compare = rbind(ucla_sample, aou_sample) %>% as.data.frame()
+dim(sample_compare) # dim = (68993, 14)
+```
+
+```{r}
+# Desc by group status
+sample_compare %>% 
+  select(LOE, AD, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid, e4count, group) %>% 
+  tbl_summary(by = group, 
+              statistic = list(all_continuous() ~ "{mean} ({sd})"),
+              digits = all_continuous() ~ 2) %>% add_p() %>% add_overall() 
+```
+
+## 2. AOU (by LOE/AD)
+```{r, eval=FALSE}
+# Desc by epilepsy status
+aou_sample %>% mutate(LOE = as.factor(LOE)) %>% 
+  select(LOE, AD, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  tbl_summary(by = LOE, 
+              statistic = list(all_continuous() ~ "{mean} ({sd})"),
+              digits = all_continuous() ~ 2) %>% add_p()
+```
+
+```{r}
+# Desc by AD status
+aou_sample %>% mutate(AD = as.factor(AD)) %>% 
+  select(AD, LOE, age_first_visit, age_last_visit, female, record_length, 
+         deceased, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  tbl_summary(by = AD, 
+              statistic = list(all_continuous() ~ "{mean} ({sd})"),
+              digits = all_continuous() ~ 2) %>% add_p()
+```
+
+# Part 2. Association
+## 1. Cox regression
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = final_aou_update %>% 
+  left_join(aou_genetics, by = "person_id") %>% 
+  filter(!is.na(AD_LOE_shared_PRS_normalized)) %>%
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  unique() %>% drop_na() %>% filter(follow_up_time > 0) 
+dim(patient_AD_longitudinal) # dim = (52319,11)
+```
+
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_AD_longitudinal)
+cox_genetic = coxph(Surv(follow_up_time, AD_status) ~ LOE_status + baseline_age +
+                      female + record_length + HTN + diabetes + stroke +
+                      hyperlipid + e4count,
+                    data = patient_AD_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = final_aou_update %>%
+  left_join(aou_genetics, by = "person_id") %>%
+  filter(!is.na(AD_LOE_shared_PRS_normalized)) %>%
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  unique() %>% drop_na() %>% 
+  filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (52206,11)
+```
+
+```{r}
+cox_health = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age +
+                     female + record_length + HTN + diabetes + stroke + hyperlipid,
+                   data = patient_LOE_longitudinal)
+cox_genetic = coxph(Surv(follow_up_time, LOE_status) ~ AD_status + baseline_age +
+                      female + record_length + HTN + diabetes + stroke +
+                      hyperlipid + e4count,
+                   data = patient_LOE_longitudinal)
+
+sum_res = rbind(tidy(cox_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(cox_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+## 2. FG modeling
+### AD ~ LOE
+```{r}
+patient_AD_longitudinal = final_aou_update %>% 
+  filter(!person_id %in% drop_id) %>%
+  left_join(aou_genetics, by = "person_id") %>%
+  filter(!is.na(AD_LOE_shared_PRS_normalized)) %>%
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate <= first_ADDate | is.na(first_ADDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate >= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    AD == 1 & first_ADDate < first_EpilepsyDate ~ 99,
+    AD == 0 & (!is.na(death_date)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(AD_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    LOE_status == 1 & AD_status == 1 ~ first_AD_age - first_epi_age,
+    LOE_status == 1 & AD_status != 1 ~ age_last_visit - first_epi_age,
+    LOE_status == 0 & AD_status == 1 ~ first_AD_age - baseline_age,
+    LOE_status == 0 & AD_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  unique() %>% drop_na() %>% 
+         filter(follow_up_time > 0)
+dim(patient_AD_longitudinal) # dim = (52319,11)
+```
+
+```{r}
+cov_health = model.matrix(~ LOE_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_AD_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_AD_longitudinal$follow_up_time, 
+                fstatus = patient_AD_longitudinal$AD_status, failcode = 1,
+                cencode = 0)
+
+cov_genetic = model.matrix(~ LOE_status + baseline_age + female + record_length +
+                             HTN + diabetes + stroke + hyperlipid + e4count,
+                           data = patient_AD_longitudinal)[, -1]
+crr_genetic = crr(cov1 = cov_genetic, ftime = patient_AD_longitudinal$follow_up_time,
+                fstatus = patient_AD_longitudinal$AD_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+### LOE ~ AD
+```{r}
+patient_LOE_longitudinal = final_aou_update %>% 
+  filter(!person_id %in% drop_id) %>%
+  left_join(aou_genetics, by = "person_id") %>%
+  filter(!is.na(AD_LOE_shared_PRS_normalized)) %>%
+  mutate(AD_status = case_when(
+    AD == 1 & (first_ADDate <= first_EpilepsyDate | is.na(first_EpilepsyDate)) ~ 1,
+    TRUE ~ 0
+  )) %>% 
+  mutate(LOE_status = case_when(
+    LOE == 1 & (first_EpilepsyDate >= first_ADDate | is.na(first_ADDate)) ~ 1,
+    LOE == 1 & first_EpilepsyDate < first_ADDate ~ 99,
+    LOE == 0 & (!is.na(death_date)) ~ 2, 
+    TRUE ~ 0
+  )) %>% filter(LOE_status != 99) %>%
+  mutate(baseline_age = age_first_visit) %>% 
+  mutate(follow_up_time = case_when(
+    AD_status == 1 & LOE_status == 1 ~ first_epi_age - first_AD_age,
+    AD_status == 1 & LOE_status != 1 ~ age_last_visit - first_AD_age,
+    AD_status == 0 & LOE_status == 1 ~ first_epi_age - baseline_age,
+    AD_status == 0 & LOE_status != 1 ~ age_last_visit - baseline_age
+  )) %>%
+  select(AD_status, LOE_status, baseline_age, female, follow_up_time, 
+         record_length, HTN, diabetes, stroke, hyperlipid, e4count) %>% 
+  unique() %>% drop_na() %>% filter(follow_up_time > 0)
+dim(patient_LOE_longitudinal) # dim = (52206,11)
+```
+
+```{r}
+cov_health = model.matrix(~ AD_status + baseline_age + female + record_length + 
+                            HTN + diabetes + stroke + hyperlipid,
+                          data = patient_LOE_longitudinal)[, -1]
+crr_health = crr(cov1 = cov_health, ftime = patient_LOE_longitudinal$follow_up_time, 
+                fstatus = patient_LOE_longitudinal$LOE_status, failcode = 1,
+                cencode = 0)
+
+cov_genetic = model.matrix(~ AD_status + baseline_age + female + record_length + 
+                             HTN + diabetes + stroke + hyperlipid + e4count,
+                           data = patient_LOE_longitudinal)[, -1]
+crr_genetic = crr(cov1 = cov_genetic, ftime = patient_LOE_longitudinal$follow_up_time, 
+                fstatus = patient_LOE_longitudinal$LOE_status, failcode = 1,
+                cencode = 0)
+
+sum_res = rbind(tidy(crr_health, conf.int = TRUE, exponentiate = TRUE)[1,],
+                tidy(crr_genetic, conf.int = TRUE, exponentiate = TRUE)[1,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(RR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(RR, p_value)
+sum_res
+```
+
+
+# Part 3. Shared GRS validation
+```{r}
+aou_eligible_controls = sample_demo_eligible %>% 
+  filter(AD == 0 & LOE == 0) %>%
+  filter(age_last_visit >= 70 & record_length >= 5)
+dim(aou_eligible_controls) # dim = (21024, 30)
+aou_eligible_cases = sample_demo_eligible %>% 
+  filter(AD == 1 | LOE == 1) 
+dim(aou_eligible_cases) # dim = (3331, 30)
+
+final_aou_update = rbind(aou_eligible_cases, aou_eligible_controls) %>% 
+  as.data.frame() %>%
+  filter(!person_id %in% drop_id)
+dim(final_aou_update) # dim = (23725, 30)
+```
+
+```{r}
+# Join sample demo
+patient_genetic = final_aou_update %>%
+  left_join(pred_prs_atlas_rmapoe, by = "person_id") %>% 
+  left_join(aou_genetics, by = "person_id") %>%
+  dplyr::select(AD, LOE, age_first_visit, age_last_visit, female, record_length, 
+         HTN, diabetes, stroke, hyperlipid, e4count, 
+         AD_LOE_shared_PRS_normalized, AD_LOE_shared_PRS_normalized_rmapoe, 
+         PC1, PC2, PC3, PC4, PC5) %>% 
+  unique() %>% drop_na() %>% 
+  mutate(APOE = ifelse(e4count == 0, 0, 1)) %>% 
+  mutate(case = case_when(
+    AD == 1 | LOE == 1 ~ 1,
+    AD == 0 & LOE == 0 ~ 0
+  )) %>% 
+  mutate(case_overlap = case_when(
+    AD == 1 & LOE == 1 ~ 1,
+    AD == 0 | LOE == 0 ~ 0
+  )) 
+dim(patient_genetic) # dim = (23251, 19)
+```
+
+## 1. Test for associations
+### 1) AD | LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+demo_basic = 'age_last_visit + female + record_length + PC1 + PC2 + PC3 + PC4 + PC5'
+
+f1 = as.formula(paste('case ~ APOE + ', demo_basic))
+apoe = glm(f1, data = patient_genetic, family = 'binomial')
+
+f2 = as.formula(paste('case ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic, family = 'binomial')
+
+f3 = as.formula(paste('case ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs_rmapoe = glm(f3, data = patient_genetic, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs_rmapoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r, eval=FALSE}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('case ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_prs_rmapoe = deviance(prs_rmapoe)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs_rmapoe) / deviance_reduced
+percent_variation_explained
+```
+
+
+### 2) AD ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('AD ~ APOE + ', demo_basic))
+apoe = glm(f1, data = patient_genetic, family = 'binomial')
+
+f2 = as.formula(paste('AD ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic, family = 'binomial')
+
+f3 = as.formula(paste('AD ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs_rmapoe = glm(f3, data = patient_genetic, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs_rmapoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('AD ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_prs_rmapoe = deviance(prs_rmapoe)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs_rmapoe) / deviance_reduced
+percent_variation_explained
+```
+
+
+### 3) LOE ~ AD_LOE_shared_PRS / APOE
+```{r}
+f1 = as.formula(paste('LOE ~ APOE + ', demo_basic))
+apoe = glm(f1, data = patient_genetic, family = 'binomial')
+
+f2 = as.formula(paste('LOE ~ AD_LOE_shared_PRS_normalized + ', demo_basic))
+prs = glm(f2, data = patient_genetic, family = 'binomial')
+
+f3 = as.formula(paste('LOE ~ AD_LOE_shared_PRS_normalized_rmapoe + ', demo_basic))
+prs_rmapoe = glm(f3, data = patient_genetic, family = 'binomial')
+
+sum_res = rbind(tidy(apoe, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs, conf.int = TRUE, exponentiate = TRUE)[2,],
+                tidy(prs_rmapoe, conf.int = TRUE, exponentiate = TRUE)[2,]) %>% 
+  select(estimate, conf.low, conf.high, p.value) %>% 
+  mutate(across(c(estimate, conf.low, conf.high), ~round(., 2))) %>% 
+  mutate(OR = paste0(estimate, " (", conf.low, ", ", conf.high, ")")) %>% 
+  mutate(p_value = round(p.value, 3)) %>% 
+  select(OR, p_value)
+sum_res
+```
+
+```{r}
+# Fit the reduced model excluding the variable of interest (e.g., x2)
+f0 = as.formula(paste('LOE ~ ', demo_basic))
+reduced = glm(f0, data = patient_genetic, family = 'binomial')
+
+# Calculate the deviance for both models
+deviance_apoe = deviance(apoe)
+deviance_prs = deviance(prs)
+deviance_prs_rmapoe = deviance(prs_rmapoe)
+deviance_reduced = deviance(reduced)
+# Calculate the percentage of variation explained by the variable x2
+percent_variation_explained = 100 * (deviance_reduced - deviance_apoe) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs) / deviance_reduced
+percent_variation_explained
+percent_variation_explained = 100 * (deviance_reduced - deviance_prs_rmapoe) / deviance_reduced
+percent_variation_explained
+```
+
+## 2. Shared genetic risk score (without APOE)
+```{r, eval=FALSE}
+# read in csv
+shared_SNP_coef = read_csv(paste0(raw_data_path, "modeling/coef_features_retrain_atlas.csv"))
+names(shared_SNP_coef) = c("SNP", "new_coef")
+shared_genotype = genotype_df_fam %>% 
+  select(IID, any_of(shared_SNP_coef$SNP)) %>% unique()
+dim(shared_genotype) # dim = (414830, 8)
+names(shared_genotype)
+```
+
+```{r}
+shared_genotype_rmapoe = shared_genotype %>% 
+  select(IID, "chr2:127133851:A:C", "chr2:103489151:T:C",
+         "chr10:11676714:A:G", "chr8:27607412:G:A") %>% unique()
+dim(shared_genotype_rmapoe) # dim = (34463, 5)
+```
+
+```{r}
+shared_SNP_coef_rmapoe = shared_SNP_coef %>% 
+  filter(SNP %in% c("chr2:127133851:A:C", "chr2:103489151:T:C", 
+                    "chr10:11676714:A:G", "chr8:27607412:G:A"))
+dim(shared_SNP_coef_rmapoe) # dim = (4, 2)
+```
+
+```{r, eval=FALSE}
+# Training set
+# Filter genotype info
+genotype.targ = shared_genotype_rmapoe %>% select(all_of(shared_SNP_coef_rmapoe$SNP)) 
+genotype.targ.matrix = as.matrix(genotype.targ[])
+# Calculate PRS
+pred_prs = genotype.targ.matrix %*% shared_SNP_coef_rmapoe$new_coef
+pred_prs_aou = cbind(pred_prs, shared_genotype_rmapoe[, 'IID']) %>% as.data.frame()
+names(pred_prs_aou) = c('AD_LOE_shared_PRS_rmapoe', 'person_id')
+mean_X = -0.0003035272
+sd_X = 0.01780379
+
+# Normalize PRS
+pred_prs_atlas_rmapoe = pred_prs_aou %>%
+  mutate(AD_LOE_shared_PRS_normalized_rmapoe = (AD_LOE_shared_PRS_rmapoe - mean_X) / sd_X)
+dim(pred_prs_atlas_rmapoe) # dim = (414830, 3)
+```
+
